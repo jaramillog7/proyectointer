@@ -1,23 +1,28 @@
-KEYWORDS = [
-    # SST / SG-SST
+#palabaras priorizadas
+SST_STRONG_KEYWORDS = [
     "seguridad y salud en el trabajo",
-    "sst",
-    "sg-sst",
     "sistema de gestion de seguridad y salud en el trabajo",
+    "sg-sst",
+    "copasst",
+    "comite paritario",
     "riesgos laborales",
     "accidente de trabajo",
     "enfermedad laboral",
-    "arl",
-    "comite paritario",
-    "copasst",
     "plan de emergencias",
     "trabajo en alturas",
     "espacios confinados",
-    # Seguridad social
+]
+#palabras claves debiles
+SST_WEAK_KEYWORDS = [
+    "sst",
+    "arl",
     "seguridad social",
     "aportes",
     "pension",
-    "salud",
     "ugpp",
     "cotizacion",
 ]
+# Lista de palabras clave que se usan para la búsqueda y el análisis.
+# Combinación de las palabras clave fuertes y débiles para ampliar la cobertura del análisis.
+# Esta lista es utilizada por el escáner de búsqueda para detectar documentos de SST.
+KEYWORDS = SST_STRONG_KEYWORDS + SST_WEAK_KEYWORDS

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alerta Legal | Dashboard</title>
+  <style>
+    :root {
+      --bg: #f4f7f5;
+      --card: #ffffff;
+      --ink: #112215;
+      --muted: #5b6b60;
+      --line: #dbe5dd;
+      --ok: #0f9d58;
+      --bad: #d93025;
+      --accent: #1f6f4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 500px at 10% -10%, #e4f3ea, transparent), var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 24px auto 36px;
+      padding: 0 16px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      letter-spacing: 0.2px;
+    }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 14px 0 20px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+    }
+    .card h3 { margin: 0 0 8px; font-size: 15px; color: var(--accent); }
+    .kpi { margin: 4px 0; font-size: 14px; }
+    form.filters {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto auto;
+      gap: 8px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      margin-bottom: 14px;
+    }
+    input, select, button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      font-size: 13px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: #f0f6f2;
+      color: #2a4d37;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .ok { background: var(--ok); }
+    .bad { background: var(--bad); }
+    a { color: #0b5ed7; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .small { font-size: 12px; color: var(--muted); }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+      padding: 0 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Dashboard Alerta Legal</h1>
+    <div class="muted">Vista local de resultados guardados en SQLite</div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Diario</h3>
+        <div class="kpi">Total: {{ stats.diario.total }}</div>
+        <div class="kpi">Relevantes: {{ stats.diario.relevantes }}</div>
+        <div class="kpi">Descartados: {{ stats.diario.descartados }}</div>
+      </div>
+      <div class="card">
+        <h3>MinTrabajo</h3>
+        <div class="kpi">Total: {{ stats.mintrabajo.total }}</div>
+        <div class="kpi">Relevantes: {{ stats.mintrabajo.relevantes }}</div>
+        <div class="kpi">Descartados: {{ stats.mintrabajo.descartados }}</div>
+      </div>
+    </div>
+
+    <form class="filters" method="get">
+      <select name="fuente">
+        <option value="" {% if filtro_fuente == "" %}selected{% endif %}>Todas las fuentes</option>
+        <option value="diario" {% if filtro_fuente == "diario" %}selected{% endif %}>Diario</option>
+        <option value="mintrabajo" {% if filtro_fuente == "mintrabajo" %}selected{% endif %}>MinTrabajo</option>
+      </select>
+      <select name="match">
+        <option value="" {% if filtro_match == "" %}selected{% endif %}>Todos</option>
+        <option value="1" {% if filtro_match == "1" %}selected{% endif %}>Solo relevantes</option>
+        <option value="0" {% if filtro_match == "0" %}selected{% endif %}>Solo descartados</option>
+      </select>
+      <input type="text" name="q" value="{{ filtro_q }}" placeholder="Buscar keyword (ej: copasst)">
+      <label class="check">
+        <input type="checkbox" name="show_context" value="1" {% if show_context %}checked{% endif %}>
+        Mostrar contexto
+      </label>
+      <button type="submit">Filtrar</button>
+    </form>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Fuente</th>
+          <th>Estado</th>
+          <th>Keywords</th>
+          <th>Contexto</th>
+          <th>PDF Local</th>
+          <th>URL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.fecha_captura }}</td>
+          <td>{{ r.fuente }}</td>
+          <td>
+            {% if r.match == 1 %}
+            <span class="tag ok">Relevante</span>
+            {% else %}
+            <span class="tag bad">Descartado</span>
+            {% endif %}
+          </td>
+          <td>{{ r.keywords_encontradas }}</td>
+          <td>
+            {% if r.context_preview %}
+            {{ r.context_preview }}
+            {% else %}
+            <span class="small">Sin contexto disponible</span>
+            {% endif %}
+          </td>
+          <td>
+            <div>{{ r.ruta_local }}</div>
+            {% if r.local_exists %}
+            <div class="small">Archivo disponible</div>
+            {% else %}
+            <div class="small">Archivo no encontrado (posible cleanup)</div>
+            {% endif %}
+          </td>
+          <td><a href="{{ r.url_pdf }}" target="_blank">Abrir</a></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7">No hay resultados con esos filtros.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

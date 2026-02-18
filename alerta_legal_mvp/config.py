@@ -2,14 +2,14 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 # Ventana temporal ~4 meses (120 días)
-DAYS_BACK = 120
+DAYS_BACK = 100
 
 TODAY = datetime.now(timezone.utc)
 START_DATE = TODAY - timedelta(days=DAYS_BACK)
 
 # Límites MVP
-MAX_PDFS_MINTRABAJO = 30
-MAX_PDFS_DIARIO = 2
+MAX_PDFS_MINTRABAJO = 5
+MAX_PDFS_DIARIO = 2 
 
 # Carpetas
 BASE_DIR = Path(__file__).parent

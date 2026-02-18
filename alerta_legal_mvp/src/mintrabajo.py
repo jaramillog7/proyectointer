@@ -2,13 +2,16 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import re
 import hashlib
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+# Expresión regular para identificar URLs de PDFs
 PDF_RE = re.compile(r"\.pdf(\?|$)", re.IGNORECASE)
 
+# Configuración de sesión HTTP con un User-Agent para simular un navegador
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -17,28 +20,59 @@ SESSION.headers.update({
     )
 })
 
+
+def _safe_pdf_name_from_url(url: str) -> str:
+    """Genera un nombre de archivo seguro para Windows a partir de la URL."""
+    parsed = urlparse(url)
+    raw_name = Path(parsed.path).name or "mintrabajo.pdf"
+    if not raw_name.lower().endswith(".pdf"):
+        raw_name = raw_name + ".pdf"
+
+    # Reemplaza caracteres no permitidos en Windows.
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", raw_name).strip(" .")
+    if not safe:
+        safe = "mintrabajo.pdf"
+
+    base = safe[:-4] if safe.lower().endswith(".pdf") else safe
+    ext = ".pdf"
+
+    # Acorta el nombre para evitar rutas excesivamente largas.
+    url_hash = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+    max_base_len = 80
+    if len(base) > max_base_len:
+        base = base[:max_base_len]
+
+    return f"{base}_{url_hash}{ext}"
+
+
+# Calcula el hash SHA-256 de un archivo local
+# Utilizado para generar un identificador único del contenido del archivo PDF
 def _sha256_file(path: Path) -> str:
+    """Calcula el hash SHA-256 de un archivo local."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
 
+# Extrae los enlaces de PDF desde el HTML de la página de MinTrabajo
+# Filtra y deduplica los enlaces encontrados que apuntan a documentos PDF
 def discover_pdf_urls(html: str, base_url: str) -> list[str]:
+    """Extrae y deduplica enlaces candidatos a PDF desde la pagina de MinTrabajo."""
     soup = BeautifulSoup(html, "html.parser")
     urls = []
     for a in soup.select("a[href]"):
         href = a.get("href", "").strip()
         if not href:
             continue
-        # Normalizar a absoluto
+        # Normaliza las URLs relativas a absolutas
         url = requests.compat.urljoin(base_url, href)
 
         # Heurística: links directos a PDF o a "view_file" que suele descargar documentos
         if PDF_RE.search(url) or "view_file" in url or "/documents/" in url:
             urls.append(url)
 
-    # dedupe manteniendo orden
+    # Elimina duplicados manteniendo el orden de aparición
     seen = set()
     out = []
     for u in urls:
@@ -47,7 +81,10 @@ def discover_pdf_urls(html: str, base_url: str) -> list[str]:
             out.append(u)
     return out
 
+# Verifica si una URL corresponde a un archivo PDF
+# Valida mediante el tipo de contenido o la firma PDF en los primeros bytes
 def is_pdf_url(url: str, timeout=25) -> bool:
+    """Confirma si una URL es PDF por cabecera HTTP o firma %PDF-."""
     try:
         # Algunos sitios bloquean HEAD o no envían Content-Type correcto.
         # Validamos con GET parcial y firma PDF.
@@ -68,16 +105,15 @@ def is_pdf_url(url: str, timeout=25) -> bool:
     except Exception:
         return False
 
+# Descarga un archivo PDF desde una URL y lo guarda en el directorio de destino
+# Retorna la ruta del archivo guardado
 def download_pdf(url: str, dest_dir: Path, timeout=60) -> Path:
+    """Descarga un PDF al directorio destino y retorna la ruta guardada."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     r = SESSION.get(url, stream=True, timeout=timeout, verify=False)
     r.raise_for_status()
 
-    # nombre simple por url
-    name = url.split("/")[-1].split("?")[0]
-    if not name.lower().endswith(".pdf"):
-        name = name + ".pdf"
-
+    name = _safe_pdf_name_from_url(url)
     path = dest_dir / name
     with open(path, "wb") as f:
         for chunk in r.iter_content(chunk_size=1024 * 256):
@@ -85,7 +121,10 @@ def download_pdf(url: str, dest_dir: Path, timeout=60) -> Path:
                 f.write(chunk)
     return path
 
+# Ejecuta el flujo completo para descubrir, validar y descargar PDFs de la página de MinTrabajo
+# Retorna una lista de tuplas con la URL y la ruta de archivo descargado
 def run_mintrabajo_pipeline(marco_legal_url: str, dest_dir: Path, max_pdfs: int):
+    """Ejecuta el flujo completo: descubrir, validar y descargar PDFs de MinTrabajo."""
     html = SESSION.get(marco_legal_url, timeout=30, verify=False).text
     candidates = discover_pdf_urls(html, marco_legal_url)
     print(f"[mintrabajo] candidatos encontrados: {len(candidates)}")
