@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vista Previa Norma</title>
+  <style>
+    :root {
+      --bg: #f4f7f5;
+      --card: #ffffff;
+      --ink: #112215;
+      --muted: #5b6b60;
+      --line: #dbe5dd;
+      --accent: #1f6f4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 20px auto;
+      padding: 0 14px 20px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    h2 { margin: 0 0 8px; font-size: 18px; color: var(--accent); }
+    .muted { color: var(--muted); font-size: 13px; }
+    .btn {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 600;
+      margin-top: 8px;
+    }
+    .mono {
+      white-space: pre-wrap;
+      max-height: 460px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fcfdfc;
+      line-height: 1.35;
+      font-size: 13px;
+    }
+    ul { margin: 0; padding-left: 18px; }
+    li { margin-bottom: 6px; }
+    .norm-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #fcfdfc;
+    }
+    .norm-title {
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .norm-text {
+      white-space: pre-wrap;
+      line-height: 1.35;
+      font-size: 14px;
+    }
+    a { color: #0b5ed7; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Vista previa de norma</h1>
+      <div class="muted">
+        ID {{ row.id }} | Fuente: {{ row.fuente }} | Fecha: {{ row.fecha_captura }} |
+        <a href="{{ url_for('index') }}">Volver al dashboard</a>
+      </div>
+      {% if pagina_detectada %}
+      <div class="muted" style="margin-top:6px;">
+        Validaci&oacute;n: <a href="{{ pdf_view_url }}#page={{ pagina_detectada }}" target="_blank">Abrir PDF en p&aacute;gina {{ pagina_detectada }}</a>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Normas detectadas (titulo y fragmento relevante)</h2>
+      {% if norm_items %}
+      {% for item in norm_items %}
+      <div class="norm-item">
+        <div class="norm-title">
+          Titulo:
+          {% for t in item.titles %}
+            {{ t }}{% if not loop.last %} | {% endif %}
+          {% endfor %}
+        </div>
+        <div class="norm-text">{{ item.text }}</div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="muted">No se detectó nombre de norma en el texto extraído.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Normas relevantes completas (sin mostrar todo el PDF)</h2>
+      {% if doc_title %}
+      <div class="norm-title">Titulo principal: {{ doc_title }}</div>
+      {% endif %}
+      {% if doc_subtitle %}
+      <div class="muted">{{ doc_subtitle }}</div>
+      {% endif %}
+      {% if local_exists and full_mode and norm_items %}
+      {% for item in norm_items %}
+      <div class="norm-item">
+        <div class="norm-title">
+          Titulo:
+          {% for t in item.titles %}
+            {{ t }}{% if not loop.last %} | {% endif %}
+          {% endfor %}
+        </div>
+        <div class="norm-text">{{ item.text }}</div>
+      </div>
+      {% endfor %}
+      {% elif local_exists and full_mode %}
+      <div class="muted">No se encontraron normas relevantes para mostrar en modo completo.</div>
+      {% elif local_exists %}
+      <div class="muted">Vista rápida cargada. Cargar normas relevantes completas puede tardar varios segundos.</div>
+      <a class="btn" href="{{ url_for('preview_row', row_id=row.id, full=1) }}">Cargar normas relevantes completas</a>
+      {% else %}
+      <div class="muted">No hay archivo local disponible para extraer norma completa.</div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

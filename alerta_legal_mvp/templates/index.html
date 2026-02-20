@@ -35,8 +35,8 @@
     .muted { color: var(--muted); }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 14px;
       margin: 14px 0 20px;
     }
     .card {
@@ -46,11 +46,68 @@
       padding: 12px 14px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.03);
     }
-    .card h3 { margin: 0 0 8px; font-size: 15px; color: var(--accent); }
-    .kpi { margin: 4px 0; font-size: 14px; }
+    .summary-card {
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid #d3e4d9;
+      background: linear-gradient(140deg, #ffffff, #f6fbf8 65%);
+      box-shadow: 0 8px 18px rgba(17, 34, 21, 0.05);
+    }
+    .summary-head {
+      margin-bottom: 10px;
+    }
+    .summary-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.2px;
+    }
+    .summary-total {
+      border: 1px solid #cfe2d6;
+      background: #eef7f1;
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    .summary-total-label {
+      font-size: 11px;
+      color: #42604f;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      margin-bottom: 3px;
+    }
+    .summary-total-value {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1;
+      color: #123524;
+      margin: 0;
+    }
+    .kpi-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .kpi-chip {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: #fff;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .kpi-chip strong {
+      font-size: 15px;
+      color: #123524;
+    }
+    .kpi-ok { border-color: #b9e6cc; background: #f1fbf5; }
+    .kpi-bad { border-color: #f3c9c6; background: #fff5f4; }
     form.filters {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr auto auto;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 8px;
       background: var(--card);
       border: 1px solid var(--line);
@@ -72,28 +129,59 @@
       cursor: pointer;
       font-weight: 600;
     }
+    .btn-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font-size: 14px;
+      background: #fff;
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .legal-banner {
+      margin: 10px 0 14px;
+      background: #eef7f1;
+      border: 1px solid #cfe5d7;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      color: #204330;
+    }
+    .legal-banner strong { color: #173325; }
     table {
       width: 100%;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
+      box-shadow: 0 6px 18px rgba(17, 34, 21, 0.05);
     }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 10px 8px;
-      font-size: 13px;
+      padding: 12px 10px;
+      font-size: 14px;
       vertical-align: top;
       text-align: left;
     }
     th {
-      background: #f0f6f2;
+      background: #edf5f0;
       color: #2a4d37;
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.5px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
     }
+    tbody tr:nth-child(even) { background: #fbfdfb; }
+    tbody tr:hover { background: #f4faf6; }
     .tag {
       display: inline-block;
       padding: 2px 8px;
@@ -107,14 +195,32 @@
     a { color: #0b5ed7; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .small { font-size: 12px; color: var(--muted); }
-    .check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: var(--muted);
-      white-space: nowrap;
-      padding: 0 4px;
+    .date-origin {
+      font-weight: 700;
+      color: #153a28;
+      letter-spacing: 0.2px;
+    }
+    .source-pill {
+      display: inline-block;
+      border: 1px solid #cfe2d6;
+      background: #f2f8f4;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #1b4a33;
+      text-transform: capitalize;
+    }
+    .path-text {
+      max-width: 460px;
+      white-space: normal;
+      word-break: break-all;
+      line-height: 1.35;
+    }
+    .context-block { white-space: pre-line; }
+    @media (max-width: 640px) {
+      .summary-total-value { font-size: 28px; }
+      .kpi-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -124,38 +230,59 @@
     <div class="muted">Vista local de resultados guardados en SQLite</div>
 
     <div class="grid">
-      <div class="card">
-        <h3>Diario</h3>
-        <div class="kpi">Total: {{ stats.diario.total }}</div>
-        <div class="kpi">Relevantes: {{ stats.diario.relevantes }}</div>
-        <div class="kpi">Descartados: {{ stats.diario.descartados }}</div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <h3 class="summary-title">Diario</h3>
+        </div>
+        <div class="summary-total">
+          <div class="summary-total-label">Total de documentos</div>
+          <div class="summary-total-value">{{ stats.diario.total }}</div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi-chip kpi-ok">Relevantes <strong>{{ stats.diario.relevantes }}</strong></div>
+          <div class="kpi-chip kpi-bad">Descartados <strong>{{ stats.diario.descartados }}</strong></div>
+        </div>
       </div>
-      <div class="card">
-        <h3>MinTrabajo</h3>
-        <div class="kpi">Total: {{ stats.mintrabajo.total }}</div>
-        <div class="kpi">Relevantes: {{ stats.mintrabajo.relevantes }}</div>
-        <div class="kpi">Descartados: {{ stats.mintrabajo.descartados }}</div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <h3 class="summary-title">MinTrabajo</h3>
+        </div>
+        <div class="summary-total">
+          <div class="summary-total-label">Total de documentos</div>
+          <div class="summary-total-value">{{ stats.mintrabajo.total }}</div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi-chip kpi-ok">Relevantes <strong>{{ stats.mintrabajo.relevantes }}</strong></div>
+          <div class="kpi-chip kpi-bad">Descartados <strong>{{ stats.mintrabajo.descartados }}</strong></div>
+        </div>
       </div>
     </div>
 
     <form class="filters" method="get">
-      <select name="fuente">
+      <select name="fuente" onchange="this.form.submit()">
         <option value="" {% if filtro_fuente == "" %}selected{% endif %}>Todas las fuentes</option>
         <option value="diario" {% if filtro_fuente == "diario" %}selected{% endif %}>Diario</option>
         <option value="mintrabajo" {% if filtro_fuente == "mintrabajo" %}selected{% endif %}>MinTrabajo</option>
       </select>
-      <select name="match">
+      <select name="match" onchange="this.form.submit()">
         <option value="" {% if filtro_match == "" %}selected{% endif %}>Todos</option>
         <option value="1" {% if filtro_match == "1" %}selected{% endif %}>Solo relevantes</option>
         <option value="0" {% if filtro_match == "0" %}selected{% endif %}>Solo descartados</option>
       </select>
-      <input type="text" name="q" value="{{ filtro_q }}" placeholder="Buscar keyword (ej: copasst)">
-      <label class="check">
-        <input type="checkbox" name="show_context" value="1" {% if show_context %}checked{% endif %}>
-        Mostrar contexto
-      </label>
-      <button type="submit">Filtrar</button>
     </form>
+
+    {% if legal_refs %}
+    <div class="legal-banner">
+      <strong>Normas detectadas:</strong>
+      {% for ref in legal_refs %}
+        {{ ref.name }} ({{ ref.count }}){% if not loop.last %} | {% endif %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="legal-banner">
+      <strong>Normas detectadas:</strong> No se detectaron leyes/decretos en los resultados filtrados.
+    </div>
+    {% endif %}
 
     <table>
       <thead>
@@ -163,8 +290,8 @@
           <th>Fecha</th>
           <th>Fuente</th>
           <th>Estado</th>
-          <th>Keywords</th>
-          <th>Contexto</th>
+          <th>Norma</th>
+          <th>Vista previa</th>
           <th>PDF Local</th>
           <th>URL</th>
         </tr>
@@ -172,8 +299,15 @@
       <tbody>
         {% for r in rows %}
         <tr>
-          <td>{{ r.fecha_captura }}</td>
-          <td>{{ r.fuente }}</td>
+          <td>
+            {% if r.fecha_origen %}
+            <div class="date-origin">{{ r.fecha_origen }}</div>
+            {% else %}
+            <div class="date-origin">{{ r.fecha_captura[:10] }}</div>
+            <div class="small">Fecha estimada (captura)</div>
+            {% endif %}
+          </td>
+          <td><span class="source-pill">{{ r.fuente }}</span></td>
           <td>
             {% if r.match == 1 %}
             <span class="tag ok">Relevante</span>
@@ -181,20 +315,21 @@
             <span class="tag bad">Descartado</span>
             {% endif %}
           </td>
-          <td>{{ r.keywords_encontradas }}</td>
           <td>
-            {% if r.context_preview %}
-            {{ r.context_preview }}
+            {% if r.legal_reference %}
+            {{ r.legal_reference }}
             {% else %}
-            <span class="small">Sin contexto disponible</span>
+            <span class="small">No detectada</span>
             {% endif %}
           </td>
+          <td><a href="{{ r.preview_url }}" target="_blank">Ver norma completa</a></td>
           <td>
-            <div>{{ r.ruta_local }}</div>
+            <div class="path-text">{{ r.ruta_local }}</div>
+            <div><a href="{{ r.pdf_view_url }}" target="_blank">Abrir local/fallback</a></div>
             {% if r.local_exists %}
             <div class="small">Archivo disponible</div>
             {% else %}
-            <div class="small">Archivo no encontrado (posible cleanup)</div>
+            <div class="small">Archivo no encontrado (posible cleanup). Se intenta URL remota.</div>
             {% endif %}
           </td>
           <td><a href="{{ r.url_pdf }}" target="_blank">Abrir</a></td>

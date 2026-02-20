@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from src.notifier import notify_windows
 from config import (DIARIO_BUSCADOR_URL,DIARIO_DIR,MAX_PDFS_DIARIO)
 
@@ -18,6 +19,46 @@ from src.pdf_text import find_keywords_with_context
 from src.mintrabajo import run_mintrabajo_pipeline
 from src.report import print_report
 
+LEGAL_REF_REGEX = re.compile(
+    r"\b(ley|decreto(?:\s+ley)?)\s+(\d{1,5})\s+de\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+NORMATIVE_CUE_REGEX = re.compile(
+    r"\b(ley|decreto|resoluci[oó]n|art[ií]culo)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize(text: str) -> str:
+    return (text or "").lower()
+
+
+def _is_normative_context(ctx: str) -> bool:
+    return bool(NORMATIVE_CUE_REGEX.search(ctx or ""))
+
+
+def _normalize_fragment(ctx: str) -> str:
+    t = (ctx or "").strip()
+    t = re.sub(r"\s+", " ", t)
+    if len(t) > 560:
+        t = t[:560].rsplit(" ", 1)[0] + "..."
+    return t
+
+
+def extract_norma_and_fragment(context_hits: list[dict]) -> tuple[str, str, int | None]:
+    for hit in context_hits:
+        ctx = hit.get("context", "") or ""
+        m = LEGAL_REF_REGEX.search(ctx)
+        if not m:
+            continue
+        norma = f"{m.group(1).strip().title()} {m.group(2).strip()} de {m.group(3).strip()}"
+        fragmento = _normalize_fragment(ctx)
+        return norma, fragmento, int(hit.get("page") or 0) or None
+    if context_hits:
+        h = context_hits[0]
+        return "", _normalize_fragment(h.get("context", "") or ""), int(h.get("page") or 0) or None
+    return "", "", None
+
 
 def delete_if_discarded(pdf_path: Path, match: bool, fuente: str) -> bool:
     """Borra el PDF local cuando no tiene coincidencias relevantes."""
@@ -35,13 +76,16 @@ def delete_if_discarded(pdf_path: Path, match: bool, fuente: str) -> bool:
 
 def evaluate_pdf_sst(pdf_path: Path) -> tuple[list[dict], list[str], bool]:
     """Evalua contexto SST y retorna (context_hits_filtrados, keywords, match)."""
-    context_hits_raw = find_keywords_with_context(pdf_path, KEYWORDS, context_chars=80)
+    context_hits_raw = find_keywords_with_context(pdf_path, KEYWORDS, context_chars=130, max_pages=45, max_hits=16)
 
     strong_set = set(SST_STRONG_KEYWORDS)
     weak_set = set(SST_WEAK_KEYWORDS)
 
     strong_hits = [h for h in context_hits_raw if h["keyword"] in strong_set]
     weak_hits = [h for h in context_hits_raw if h["keyword"] in weak_set]
+
+    # Enfoca en hits fuertes y contexto normativo; evita falsos positivos por menciones sueltas.
+    strong_hits = [h for h in strong_hits if _is_normative_context(h.get("context", ""))]
 
     weak_keywords_per_page = {}
     for hit in weak_hits:
@@ -50,10 +94,16 @@ def evaluate_pdf_sst(pdf_path: Path) -> tuple[list[dict], list[str], bool]:
             weak_keywords_per_page[page] = set()
         weak_keywords_per_page[page].add(hit["keyword"])
 
+    strong_pages = {h["page"] for h in strong_hits}
     weak_valid_pages = {
-        page for page, page_keywords in weak_keywords_per_page.items() if len(page_keywords) >= 2
+        page
+        for page, page_keywords in weak_keywords_per_page.items()
+        if len(page_keywords) >= 2 and page in strong_pages
     }
-    weak_hits_filtered = [h for h in weak_hits if h["page"] in weak_valid_pages]
+    weak_hits_filtered = [
+        h for h in weak_hits
+        if h["page"] in weak_valid_pages and _is_normative_context(h.get("context", ""))
+    ]
 
     context_hits = strong_hits + weak_hits_filtered
     hits = sorted({h["keyword"] for h in context_hits})
@@ -88,6 +138,7 @@ def main():
             continue
 
         context_hits, hits, match = evaluate_pdf_sst(pdf_path)
+        norma_detectada, fragmento_relevante, pagina_detectada = extract_norma_and_fragment(context_hits)
         source_stats["diario"]["procesados"] += 1
 
         if match:
@@ -110,6 +161,9 @@ def main():
             hash_pdf=None,
             match=match,
             keywords=";".join(hits),
+            norma_detectada=norma_detectada,
+            fragmento_relevante=fragmento_relevante,
+            pagina_detectada=pagina_detectada,
         )
 
         results.append({
@@ -139,6 +193,7 @@ def main():
             continue
 
         context_hits, hits, match = evaluate_pdf_sst(pdf_path)
+        norma_detectada, fragmento_relevante, pagina_detectada = extract_norma_and_fragment(context_hits)
         source_stats["mintrabajo"]["procesados"] += 1
 
         if match:
@@ -161,6 +216,9 @@ def main():
             hash_pdf=None,
             match=match,
             keywords=";".join(hits),
+            norma_detectada=norma_detectada,
+            fragmento_relevante=fragmento_relevante,
+            pagina_detectada=pagina_detectada,
         )
 
         results.append({

@@ -1,6 +1,9 @@
 requests
 beautifulsoup4
 pdfplumber
+pypdfium2
+pytesseract
+pillow
 playwright
 notify-py
 flask

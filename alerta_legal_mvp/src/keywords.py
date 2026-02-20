@@ -16,11 +16,8 @@ SST_STRONG_KEYWORDS = [
 SST_WEAK_KEYWORDS = [
     "sst",
     "arl",
-    "seguridad social",
-    "aportes",
-    "pension",
-    "ugpp",
-    "cotizacion",
+    "seguridad industrial",
+    "salud ocupacional",
 ]
 # Lista de palabras clave que se usan para la búsqueda y el análisis.
 # Combinación de las palabras clave fuertes y débiles para ampliar la cobertura del análisis.

@@ -85,8 +85,14 @@ def run_diario_pipeline_pw(
     downloaded: List[Tuple[str, Path]] = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(accept_downloads=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--ignore-certificate-errors"],
+        )
+        ctx = browser.new_context(
+            accept_downloads=True,
+            ignore_https_errors=True,
+        )
         page = ctx.new_page()
 
         _goto_with_retry(page, buscar_url)
