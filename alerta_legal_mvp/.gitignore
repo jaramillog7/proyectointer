@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local runtime data
+alerta.sqlite
+*.sqlite
+*.db
+
+# Project generated data
+/data/downloads/
+/data/state/text_cache/
+/data/state/*.sqlite
+/data/state/*.db
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
