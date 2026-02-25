@@ -1,14 +1,17 @@
 from pathlib import Path
-import sqlite3
 from functools import lru_cache
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 from urllib.parse import parse_qs, urlparse
+import subprocess
+import threading
+import sys
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
 
-from config import DB_PATH
+from config import DB_PATH, DAYS_BACK
+from src.db import get_connection, get_engine, init_db as init_state_db
 from src.pdf_text import extract_text, find_keywords_with_context
 from src.keywords import SST_STRONG_KEYWORDS
 
@@ -17,27 +20,116 @@ app = Flask(__name__)
 TEXT_CACHE_DIR = Path(DB_PATH).parent / "text_cache"
 TEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+RUN_STATE_LOCK = threading.Lock()
+RUN_PROCESS = None
+RUN_STATE: dict = {
+    "running": False,
+    "started_at": "",
+    "finished_at": "",
+    "exit_code": None,
+    "pid": None,
+    "logs": [],
+    "stop_requested": False,
+}
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+
+def _append_run_log(line: str) -> None:
+    with RUN_STATE_LOCK:
+        logs = RUN_STATE.get("logs", [])
+        logs.append(line.rstrip("\n"))
+        if len(logs) > 2000:
+            del logs[: len(logs) - 2000]
+        RUN_STATE["logs"] = logs
+
+
+def _estimate_progress(logs: list[str], running: bool, exit_code) -> int:
+    progress = 0
+    all_text = "\n".join(logs[-500:]).lower()
+
+    if "[runner] iniciando" in all_text:
+        progress = max(progress, 5)
+    if "======================== diario" in all_text:
+        progress = max(progress, 12)
+    if "[diario] descargados:" in all_text:
+        progress = max(progress, 28)
+    if "====================== mintrabajo" in all_text:
+        progress = max(progress, 55)
+    if "[mintrabajo] descargados:" in all_text:
+        progress = max(progress, 68)
+    if "reporte alerta legal (terminal)" in all_text:
+        progress = max(progress, 90)
+    if "[runner] finalizado con codigo 0" in all_text:
+        progress = 100
+
+    if not running and exit_code == 0:
+        progress = 100
+    elif not running and progress == 0 and logs:
+        progress = 100
+    elif running and progress == 0:
+        progress = 3
+
+    return max(0, min(100, int(progress)))
+
+
+def _run_main_worker() -> None:
+    global RUN_PROCESS
+    base_dir = Path(__file__).parent
+    cmd = [sys.executable, "main.py"]
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(base_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        with RUN_STATE_LOCK:
+            RUN_STATE["pid"] = proc.pid
+            RUN_PROCESS = proc
+        _append_run_log(f"[runner] Iniciando: {' '.join(cmd)}")
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                _append_run_log(line)
+        proc.wait()
+        with RUN_STATE_LOCK:
+            RUN_STATE["exit_code"] = int(proc.returncode)
+            RUN_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
+            RUN_STATE["running"] = False
+            RUN_STATE["pid"] = None
+            RUN_PROCESS = None
+        _append_run_log(f"[runner] Finalizado con codigo {proc.returncode}")
+    except Exception as e:
+        _append_run_log(f"[runner] Error ejecutando main.py: {e}")
+        with RUN_STATE_LOCK:
+            RUN_STATE["exit_code"] = -1
+            RUN_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
+            RUN_STATE["running"] = False
+            RUN_STATE["pid"] = None
+            RUN_PROCESS = None
+    finally:
+        try:
+            if proc and proc.stdout:
+                proc.stdout.close()
+        except Exception:
+            pass
+
+
+def get_conn():
+    return get_connection(DB_PATH)
 
 
 def ensure_db_columns() -> None:
-    with get_conn() as conn:
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(pdf_procesados)").fetchall()}
-        if "norma_detectada" not in existing:
-            conn.execute("ALTER TABLE pdf_procesados ADD COLUMN norma_detectada TEXT")
-        if "fragmento_relevante" not in existing:
-            conn.execute("ALTER TABLE pdf_procesados ADD COLUMN fragmento_relevante TEXT")
-        if "pagina_detectada" not in existing:
-            conn.execute("ALTER TABLE pdf_procesados ADD COLUMN pagina_detectada INTEGER")
-        conn.commit()
+    # init_state_db ya crea/actualiza esquema tanto para sqlite como mysql.
+    conn = init_state_db(DB_PATH)
+    conn.close()
 
 
 LEGAL_REF_REGEX = re.compile(
-    r"\b(ley|decreto(?:\s+ley)?)\s+(\d{1,5})\s+de\s+(\d{4})\b",
+    r"\b(ley|decreto(?:\s+ley)?|resoluci[oó]n(?:\s+n[uú]mero)?)\s+(\d{1,18})\s+de\s+(\d{4})\b",
     re.IGNORECASE,
 )
 MONTHS_ES = {
@@ -83,7 +175,13 @@ def _detect_legal_reference(text: str) -> str:
     m = LEGAL_REF_REGEX.search(text)
     if not m:
         return ""
-    kind = m.group(1).strip().title()
+    raw_kind = m.group(1).strip().lower()
+    if "resoluci" in raw_kind:
+        kind = "Resolucion"
+    elif "decreto" in raw_kind:
+        kind = "Decreto"
+    else:
+        kind = "Ley"
     number = m.group(2).strip()
     year = m.group(3).strip()
     return f"{kind} {number} de {year}"
@@ -175,14 +273,69 @@ def _normalize_legal_fragment(text: str, max_len: int = 1300) -> str:
     t = re.sub(r"([A-Za-z????????????])\s*-\s*([A-Za-z????????????])", r"\1\2", t)
     # Remove common column/scan separators and artifacts.
     t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"(?<=[,.;:])(?=\S)", " ", t)
     t = re.sub(r"\s+([,.;:])", r"\1", t)
     t = re.sub(r"([,(])\s+", r"\1", t)
     # Normalize whitespace
     t = re.sub(r"\s+", " ", t)
+    # Trim OCR garbage before common legal anchors.
+    anchors = [
+        r"\bpor la cual\b",
+        r"\bque el art[íi]culo\b",
+        r"\bart[íi]culo\s+\d+\b",
+        r"\bley\s+\d{1,5}\s+de\s+\d{4}\b",
+        r"\bdecreto\s+\d{1,5}\s+de\s+\d{4}\b",
+    ]
+    lower_t = t.lower()
+    best_pos = -1
+    for pat in anchors:
+        m = re.search(pat, lower_t, re.IGNORECASE)
+        if not m:
+            continue
+        pos = m.start()
+        if best_pos == -1 or pos < best_pos:
+            best_pos = pos
+    if best_pos > 40:
+        t = t[best_pos:]
+
     # Keep fragment bounded for readability
     if max_len and len(t) > max_len:
         t = t[:max_len].rsplit(" ", 1)[0] + "..."
     return t.strip()
+
+
+def _fragment_quality_score(text: str) -> float:
+    if not text:
+        return -1e9
+    t = text.strip()
+    tl = t.lower()
+    words = re.findall(r"[a-záéíóúñ]+", tl)
+    if not words:
+        return -1e9
+
+    legal_hits = 0
+    for pat in (
+        r"\bley\s+\d{1,5}\s+de\s+\d{4}\b",
+        r"\bdecreto\s+\d{1,5}\s+de\s+\d{4}\b",
+        r"\bart[íi]culo\b",
+        r"\bministerio\b",
+        r"\brisgos laborales\b",
+        r"\bseguridad y salud en el trabajo\b",
+    ):
+        if re.search(pat, tl, re.IGNORECASE):
+            legal_hits += 1
+
+    weird_tokens = re.findall(r"\b[A-Za-z]*\d+[A-Za-z\d]*\b", t)
+    upper_noise = re.findall(r"\b[A-Z]{4,}\b", t)
+    punct_noise = len(re.findall(r"[,.;:]{2,}", t))
+
+    score = 0.0
+    score += min(len(t), 2600) / 120.0
+    score += legal_hits * 8.0
+    score -= len(weird_tokens) * 2.0
+    score -= len(upper_noise) * 1.3
+    score -= punct_noise * 2.0
+    return score
 
 
 def _build_norm_blocks(
@@ -204,6 +357,7 @@ def _build_norm_blocks(
 
     grouped: dict[str, list[str]] = {}
     order: list[str] = []
+    normalized_context_pool = [_normalize_legal_fragment(c, max_len=1800) for c in (context_lines or []) if c]
 
     for ref in legal_refs:
         snippet = ""
@@ -218,9 +372,16 @@ def _build_norm_blocks(
             parts = ref_context_map.get(key, [])
             if parts:
                 # En vista rapida prioriza fragmentos de hits para mantener velocidad.
-                limit = 3 if full_mode else 2
-                max_len = 4800 if full_mode else 1300
-                snippet = "\n".join(_normalize_legal_fragment(p, max_len=max_len) for p in parts[:limit] if p)
+                limit = 3 if full_mode else 3
+                max_len = 4800 if full_mode else 2800
+                cleaned_parts = []
+                for p in parts:
+                    cp = _normalize_legal_fragment(p, max_len=max_len)
+                    if cp:
+                        cleaned_parts.append(cp)
+                cleaned_parts.sort(key=_fragment_quality_score, reverse=True)
+                best_parts = cleaned_parts[:limit]
+                snippet = "\n".join(best_parts)
 
         if not snippet:
             window = 4200 if full_mode else 900
@@ -233,6 +394,19 @@ def _build_norm_blocks(
                     break
         if not snippet:
             snippet = "Sin fragmento disponible para esta norma."
+        # If detected legal ref produced too-short text, enrich with additional nearby context lines.
+        if snippet and len(snippet) < 1300 and normalized_context_pool:
+            extras: list[str] = []
+            for ctx in normalized_context_pool:
+                if not ctx:
+                    continue
+                if ctx.lower() in snippet.lower():
+                    continue
+                extras.append(ctx)
+                if len(extras) >= (3 if full_mode else 3):
+                    break
+            if extras:
+                snippet = "\n".join([snippet] + extras)
 
         if snippet not in grouped:
             grouped[snippet] = []
@@ -611,15 +785,15 @@ def get_context_and_legal_ref(local_path: str, keywords_csv: str, raw_query: str
     return preview, legal_ref
 
 
-def get_stats(conn: sqlite3.Connection) -> dict:
+def get_stats(conn) -> dict:
     stats = {}
     for fuente in ("diario", "mintrabajo"):
         row = conn.execute(
             """
             SELECT
               COUNT(*) AS total,
-              SUM(CASE WHEN match = 1 THEN 1 ELSE 0 END) AS relevantes,
-              SUM(CASE WHEN match = 0 THEN 1 ELSE 0 END) AS descartados
+              SUM(CASE WHEN `match` = 1 THEN 1 ELSE 0 END) AS relevantes,
+              SUM(CASE WHEN `match` = 0 THEN 1 ELSE 0 END) AS descartados
             FROM pdf_procesados
             WHERE fuente = ?
             """,
@@ -640,20 +814,25 @@ def _get_filtered_rows(
     match: str,
 ) -> tuple[list[dict], dict, list[dict]]:
     q_terms = _query_terms(q_raw)
+    origin_cutoff = (datetime.now(timezone.utc).date() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
     sql = """
-    SELECT id, fuente, url_pdf, fecha_captura, ruta_local, match, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
+    SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
     FROM pdf_procesados
     WHERE 1=1
     """
     params = []
+
+    # Solo mostrar documentos dentro de la ventana configurada por fecha de origen.
+    sql += " AND fecha_origen IS NOT NULL AND fecha_origen >= ?"
+    params.append(origin_cutoff)
 
     if fuente in ("diario", "mintrabajo"):
         sql += " AND fuente = ?"
         params.append(fuente)
 
     if match in ("0", "1"):
-        sql += " AND match = ?"
+        sql += " AND `match` = ?"
         params.append(int(match))
 
     for term in q_terms:
@@ -677,7 +856,6 @@ def _get_filtered_rows(
     for r in rows:
         local_path = Path(r["ruta_local"]) if r["ruta_local"] else None
         local_exists = bool(local_path and local_path.exists())
-        is_relevant = int(r["match"]) == 1
 
         # Fast path for web: read precomputed fields from DB only.
         context_preview = (r["fragmento_relevante"] or "").strip()
@@ -685,10 +863,7 @@ def _get_filtered_rows(
 
         # No recalcular norma en listado para mantener carga rapida.
 
-        raw_origin_date = _extract_origin_date_fast(
-            str(local_path) if local_path else "",
-            r["url_pdf"] or "",
-        )
+        raw_origin_date = (r.get("fecha_origen") or "").strip()
         parsed_rows.append(
             {
                 "id": r["id"],
@@ -701,7 +876,7 @@ def _get_filtered_rows(
                 ),
                 "ruta_local": str(local_path) if local_path else "",
                 "local_exists": local_exists,
-                "match": int(r["match"]),
+                "match": int(r["match_flag"]),
                 "keywords_encontradas": r["keywords_encontradas"] or "",
                 "context_preview": context_preview,
                 "legal_reference": legal_reference,
@@ -817,7 +992,7 @@ def export_context_txt_row(row_id: int):
     with get_conn() as conn:
         row = conn.execute(
             """
-            SELECT id, fuente, url_pdf, fecha_captura, ruta_local, match, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
+            SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
             FROM pdf_procesados
             WHERE id = ?
             LIMIT 1
@@ -833,7 +1008,7 @@ def export_context_txt_row(row_id: int):
 
     context_preview = ""
     legal_reference = ""
-    if local_exists and int(row["match"]) == 1:
+    if local_exists and int(row["match_flag"]) == 1:
         context_preview, legal_reference = get_context_and_legal_ref(
             str(local_path),
             row["keywords_encontradas"] or "",
@@ -844,7 +1019,7 @@ def export_context_txt_row(row_id: int):
     if not context_lines:
         context_lines = ["Sin contexto disponible"]
 
-    estado = "Relevante" if int(row["match"]) == 1 else "Descartado"
+    estado = "Relevante" if int(row["match_flag"]) == 1 else "Descartado"
     lines = [
         "REPORTE DE CONTEXTO - ALERTA LEGAL",
         f"Generado: {datetime.now(timezone.utc).isoformat()}",
@@ -884,7 +1059,7 @@ def preview_row(row_id: int):
     with get_conn() as conn:
         row = conn.execute(
             """
-            SELECT id, fuente, url_pdf, fecha_captura, ruta_local, match, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
+            SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
             FROM pdf_procesados
             WHERE id = ?
             LIMIT 1
@@ -955,15 +1130,14 @@ def preview_row(row_id: int):
                         keywords=rel_keywords,
                         max_refs=3,
                     )
-    # Fallback/prioridad de UX: en vista rapida usa fragmento estable guardado por el pipeline.
+    # Fallback/prioridad de UX: usa fragmento guardado solo cuando no hay contexto extraido en runtime.
     db_ref = (row["norma_detectada"] or "").strip()
     db_fragment = (row["fragmento_relevante"] or "").strip()
-    db_page = int(row["pagina_detectada"]) if row["pagina_detectada"] else None
 
     if not legal_refs and db_ref:
         legal_refs = [db_ref]
 
-    if (not full_mode) and db_fragment:
+    if (not full_mode) and db_fragment and not context_lines:
         chosen_fragment = _normalize_legal_fragment(db_fragment) or db_fragment
         context_lines = [chosen_fragment]
         if legal_refs:
@@ -1033,13 +1207,84 @@ def api_results():
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, fuente, url_pdf, fecha_captura, ruta_local, match, keywords_encontradas
+            SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas
             FROM pdf_procesados
             ORDER BY fecha_captura DESC
             LIMIT 500
             """
         ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    data = []
+    for r in rows:
+        item = dict(r)
+        item["match"] = int(item.get("match_flag") or 0)
+        data.append(item)
+    return jsonify(data)
+
+
+@app.route("/api/run-main", methods=["POST"])
+def api_run_main():
+    with RUN_STATE_LOCK:
+        if RUN_STATE.get("running"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": "Ya hay una ejecucion en progreso.",
+                    "running": True,
+                }
+            ), 409
+        RUN_STATE["running"] = True
+        RUN_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        RUN_STATE["finished_at"] = ""
+        RUN_STATE["exit_code"] = None
+        RUN_STATE["pid"] = None
+        RUN_STATE["logs"] = []
+        RUN_STATE["stop_requested"] = False
+
+    t = threading.Thread(target=_run_main_worker, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "running": True, "message": "Ejecucion iniciada."})
+
+
+@app.route("/api/run-stop", methods=["POST"])
+def api_run_stop():
+    global RUN_PROCESS
+    with RUN_STATE_LOCK:
+        running = bool(RUN_STATE.get("running"))
+        proc = RUN_PROCESS
+        RUN_STATE["stop_requested"] = True
+
+    if not running or proc is None:
+        return jsonify({"ok": False, "message": "No hay ejecucion activa."}), 409
+
+    try:
+        proc.terminate()
+        _append_run_log("[runner] Solicitud de parada enviada.")
+        return jsonify({"ok": True, "message": "Ejecucion detenida (solicitada)."})
+    except Exception as e:
+        _append_run_log(f"[runner] No se pudo detener el proceso: {e}")
+        return jsonify({"ok": False, "message": f"No se pudo detener: {e}"}), 500
+
+
+@app.route("/api/run-status")
+def api_run_status():
+    with RUN_STATE_LOCK:
+        logs = RUN_STATE.get("logs", [])
+        running = bool(RUN_STATE.get("running"))
+        exit_code = RUN_STATE.get("exit_code")
+        progress = _estimate_progress(logs, running=running, exit_code=exit_code)
+        return jsonify(
+            {
+                "running": running,
+                "started_at": RUN_STATE.get("started_at") or "",
+                "finished_at": RUN_STATE.get("finished_at") or "",
+                "exit_code": exit_code,
+                "pid": RUN_STATE.get("pid"),
+                "progress": progress,
+                "stop_requested": bool(RUN_STATE.get("stop_requested")),
+                "log_count": len(logs),
+                "logs_tail": logs[-120:],
+            }
+        )
 
 
 if __name__ == "__main__":

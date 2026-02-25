@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import re
+from urllib.parse import parse_qs, urlparse
 from src.notifier import notify_windows
-from config import (DIARIO_BUSCADOR_URL,DIARIO_DIR,MAX_PDFS_DIARIO)
+from config import (DIARIO_BUSCADOR_URL,DIARIO_DIR,MAX_PDFS_DIARIO, DAYS_BACK)
 
 from src.diario_playwright import run_diario_pipeline_pw as run_diario_pipeline
 
@@ -15,9 +16,40 @@ from config import (
 )
 from src.db import init_db, already_seen, register_result
 from src.keywords import KEYWORDS, SST_STRONG_KEYWORDS, SST_WEAK_KEYWORDS
-from src.pdf_text import find_keywords_with_context
+from src.pdf_text import extract_text, find_keywords_with_context
 from src.mintrabajo import run_mintrabajo_pipeline
 from src.report import print_report
+
+MONTHS_ES = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+MONTHS_ABBR = {
+    "ene": 1,
+    "feb": 2,
+    "mar": 3,
+    "abr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "ago": 8,
+    "sep": 9,
+    "set": 9,
+    "oct": 10,
+    "nov": 11,
+    "dic": 12,
+}
 
 LEGAL_REF_REGEX = re.compile(
     r"\b(ley|decreto(?:\s+ley)?)\s+(\d{1,5})\s+de\s+(\d{4})\b",
@@ -27,10 +59,6 @@ NORMATIVE_CUE_REGEX = re.compile(
     r"\b(ley|decreto|resoluci[oó]n|art[ií]culo)\b",
     re.IGNORECASE,
 )
-
-
-def _normalize(text: str) -> str:
-    return (text or "").lower()
 
 
 def _is_normative_context(ctx: str) -> bool:
@@ -58,6 +86,122 @@ def extract_norma_and_fragment(context_hits: list[dict]) -> tuple[str, str, int 
         h = context_hits[0]
         return "", _normalize_fragment(h.get("context", "") or ""), int(h.get("page") or 0) or None
     return "", "", None
+
+
+def _extract_origin_candidates(text: str) -> list[datetime]:
+    candidates: list[datetime] = []
+    if not text:
+        return candidates
+
+    # YYYY-MM-DD
+    for m in re.finditer(r"\b(\d{4})-(\d{2})-(\d{2})\b", text):
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            candidates.append(datetime(year, month, day))
+        except ValueError:
+            pass
+
+    # DD/MM/YYYY
+    for m in re.finditer(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", text):
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            candidates.append(datetime(year, month, day))
+        except ValueError:
+            pass
+
+    # DD de <mes> de YYYY
+    for m in re.finditer(
+        r"\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+(\d{4})\b",
+        text,
+        re.IGNORECASE,
+    ):
+        day = int(m.group(1))
+        month = MONTHS_ES.get(m.group(2).lower())
+        year = int(m.group(3))
+        if not month:
+            continue
+        try:
+            candidates.append(datetime(year, month, day))
+        except ValueError:
+            pass
+
+    # DD MON YYYY (e.g. 28 JUL 2022)
+    for m in re.finditer(
+        r"\b(\d{1,2})\s+(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|SET|OCT|NOV|DIC)\s+(\d{4})\b",
+        text,
+        re.IGNORECASE,
+    ):
+        day = int(m.group(1))
+        month = MONTHS_ABBR.get(m.group(2).lower())
+        year = int(m.group(3))
+        if not month:
+            continue
+        try:
+            candidates.append(datetime(year, month, day))
+        except ValueError:
+            pass
+
+    return candidates
+
+
+def _parse_origin_date(text: str) -> str:
+    candidates = _extract_origin_candidates(text)
+    if not candidates:
+        return ""
+
+    # Heuristic: choose the most recent plausible publication date.
+    now = datetime.now()
+    plausible = [d for d in candidates if 2000 <= d.year <= (now.year + 1)]
+    chosen = max(plausible) if plausible else max(candidates)
+    return chosen.strftime("%Y-%m-%d")
+
+
+def _extract_origin_date(pdf_path: Path, url_pdf: str) -> str:
+    header_text = ""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(pdf_path) as pdf:
+            chunks = []
+            for page in pdf.pages[:3]:
+                txt = (page.extract_text() or "").strip()
+                if txt:
+                    chunks.append(txt[:3000])
+            header_text = "\n".join(chunks)
+    except Exception:
+        header_text = ""
+
+    origin_date = _parse_origin_date(header_text)
+    if origin_date:
+        return origin_date
+
+    full_text = extract_text(pdf_path)
+    origin_date = _parse_origin_date(full_text[:10000])
+    if origin_date:
+        return origin_date
+
+    # Fallback 1: parse explicit date text in URL.
+    origin_date = _parse_origin_date(url_pdf or "")
+    if origin_date:
+        return origin_date
+
+    # Fallback 2: MinTrabajo/Liferay query param "t" (epoch ms/seconds).
+    try:
+        parsed = urlparse(url_pdf or "")
+        t_values = parse_qs(parsed.query).get("t") or []
+        if t_values:
+            t_raw = str(t_values[0]).strip()
+            if t_raw.isdigit():
+                t_int = int(t_raw)
+                if t_int > 10_000_000_000:  # epoch in ms
+                    dt = datetime.utcfromtimestamp(t_int / 1000.0)
+                else:  # epoch in s
+                    dt = datetime.utcfromtimestamp(float(t_int))
+                return dt.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    return ""
 
 
 def delete_if_discarded(pdf_path: Path, match: bool, fuente: str) -> bool:
@@ -118,13 +262,13 @@ def main():
         "diario": {"descargados": 0, "procesados": 0, "relevantes": 0, "descartados": 0, "omitidos": 0},
         "mintrabajo": {"descargados": 0, "procesados": 0, "relevantes": 0, "descartados": 0, "omitidos": 0},
     }
-
-    
+    origin_cutoff = datetime.now(timezone.utc).date() - timedelta(days=DAYS_BACK)
 
     print("\n" + "=" * 24 + " DIARIO " + "=" * 24)
     downloaded_diario = run_diario_pipeline(
         buscar_url=DIARIO_BUSCADOR_URL,
         dest_dir=DIARIO_DIR,
+        days_back=DAYS_BACK,
         max_pdfs=MAX_PDFS_DIARIO
     )
     source_stats["diario"]["descargados"] = len(downloaded_diario)
@@ -135,6 +279,22 @@ def main():
     for url_pdf, pdf_path in downloaded_diario:
         if already_seen(conn, "diario", url_pdf):
             source_stats["diario"]["omitidos"] += 1
+            continue
+
+        fecha_origen = _extract_origin_date(pdf_path, url_pdf)
+        if not fecha_origen:
+            source_stats["diario"]["descartados"] += 1
+            print(f"[diario] omitido: sin fecha de origen ({pdf_path.name})")
+            continue
+        try:
+            fecha_origen_dt = datetime.strptime(fecha_origen, "%Y-%m-%d").date()
+        except ValueError:
+            source_stats["diario"]["descartados"] += 1
+            print(f"[diario] omitido: fecha de origen invalida '{fecha_origen}' ({pdf_path.name})")
+            continue
+        if fecha_origen_dt < origin_cutoff:
+            source_stats["diario"]["descartados"] += 1
+            print(f"[diario] omitido por antiguedad ({fecha_origen} < {origin_cutoff}) ({pdf_path.name})")
             continue
 
         context_hits, hits, match = evaluate_pdf_sst(pdf_path)
@@ -157,6 +317,7 @@ def main():
             fuente="diario",
             url_pdf=url_pdf,
             fecha_captura=datetime.now(timezone.utc).isoformat(),
+            fecha_origen=fecha_origen,
             ruta_local=pdf_path,
             hash_pdf=None,
             match=match,
@@ -174,7 +335,9 @@ def main():
             "keywords": hits,
             "context_hits": context_hits,
         })
-        delete_if_discarded(pdf_path, match, "diario")
+        # Se conservan PDFs de Diario para revisarlos en la web aunque sean descartados.
+        if not match:
+            print(f"[cleanup] conservado (diario): {pdf_path}")
 
     print("\n" + "=" * 22 + " MINTRABAJO " + "=" * 22)
     downloaded_mintrabajo = run_mintrabajo_pipeline(
@@ -190,6 +353,22 @@ def main():
     for url_pdf, pdf_path in downloaded_mintrabajo:
         if already_seen(conn, "mintrabajo", url_pdf):
             source_stats["mintrabajo"]["omitidos"] += 1
+            continue
+
+        fecha_origen = _extract_origin_date(pdf_path, url_pdf)
+        if not fecha_origen:
+            source_stats["mintrabajo"]["descartados"] += 1
+            print(f"[mintrabajo] omitido: sin fecha de origen ({pdf_path.name})")
+            continue
+        try:
+            fecha_origen_dt = datetime.strptime(fecha_origen, "%Y-%m-%d").date()
+        except ValueError:
+            source_stats["mintrabajo"]["descartados"] += 1
+            print(f"[mintrabajo] omitido: fecha de origen invalida '{fecha_origen}' ({pdf_path.name})")
+            continue
+        if fecha_origen_dt < origin_cutoff:
+            source_stats["mintrabajo"]["descartados"] += 1
+            print(f"[mintrabajo] omitido por antiguedad ({fecha_origen} < {origin_cutoff}) ({pdf_path.name})")
             continue
 
         context_hits, hits, match = evaluate_pdf_sst(pdf_path)
@@ -212,6 +391,7 @@ def main():
             fuente="mintrabajo",
             url_pdf=url_pdf,
             fecha_captura=datetime.now(timezone.utc).isoformat(),
+            fecha_origen=fecha_origen,
             ruta_local=pdf_path,
             hash_pdf=None,
             match=match,
@@ -234,4 +414,6 @@ def main():
             print(f"[cleanup] conservado (mintrabajo): {pdf_path}")
     print_report(results, source_stats)
 
-if __name__ == "__main__":    main()
+
+if __name__ == "__main__":
+    main()

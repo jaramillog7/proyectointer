@@ -2,11 +2,11 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import re
 import hashlib
-from urllib.parse import urlparse
-from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 # Expresión regular para identificar URLs de PDFs
 PDF_RE = re.compile(r"\.pdf(\?|$)", re.IGNORECASE)
@@ -47,14 +47,6 @@ def _safe_pdf_name_from_url(url: str) -> str:
 
 # Calcula el hash SHA-256 de un archivo local
 # Utilizado para generar un identificador único del contenido del archivo PDF
-def _sha256_file(path: Path) -> str:
-    """Calcula el hash SHA-256 de un archivo local."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
 # Extrae los enlaces de PDF desde el HTML de la página de MinTrabajo
 # Filtra y deduplica los enlaces encontrados que apuntan a documentos PDF
 def discover_pdf_urls(html: str, base_url: str) -> list[str]:
@@ -79,7 +71,53 @@ def discover_pdf_urls(html: str, base_url: str) -> list[str]:
         if u not in seen:
             seen.add(u)
             out.append(u)
+    # Prioriza documentos mas recientes para que max_pdfs no corte solo historicos.
+    out.sort(key=_url_recency_key, reverse=True)
     return out
+
+
+def _url_recency_key(url: str) -> tuple[int, int]:
+    """
+    Heuristica de recencia para ordenar candidatos:
+    1) query param t (epoch ms) de Liferay/MinTrabajo.
+    2) fecha en texto de URL (YYYY, MM, DD).
+    """
+    # Base score by explicit epoch in query string.
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        t_values = qs.get("t") or []
+        if t_values:
+            t_raw = str(t_values[0]).strip()
+            # Handle ms or seconds timestamps.
+            if t_raw.isdigit():
+                t_int = int(t_raw)
+                if t_int > 10_000_000_000:  # ms
+                    return (3, t_int)
+                return (3, t_int * 1000)
+    except Exception:
+        pass
+
+    # Fallback score by best YYYY[-/_]MM[-/_]DD present in URL.
+    try:
+        text = url.lower()
+        best = 0
+        for m in re.finditer(r"(20\d{2})[^\d]?([01]?\d)[^\d]?([0-3]?\d)", text):
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            try:
+                dt = datetime(y, mo, d)
+                stamp = int(dt.timestamp() * 1000)
+                if stamp > best:
+                    best = stamp
+            except Exception:
+                continue
+        if best:
+            return (2, best)
+    except Exception:
+        pass
+
+    # Lowest confidence fallback.
+    return (1, 0)
 
 # Verifica si una URL corresponde a un archivo PDF
 # Valida mediante el tipo de contenido o la firma PDF en los primeros bytes
