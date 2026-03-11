@@ -28,3 +28,6 @@ alerta.sqlite
 *.log
 *.tmp
 *.temp
+
+# Secrets
+.env

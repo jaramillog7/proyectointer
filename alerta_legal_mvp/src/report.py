@@ -12,13 +12,21 @@ def print_report(results: list[dict], source_stats: dict | None = None):
     if source_stats:
         print("\nResumen por fuente:")
         for fuente, stats in source_stats.items():
+            procesados = int(stats.get("procesados", 0) or 0)
+            ms_total = int(stats.get("analysis_ms_total", 0) or 0)
+            avg_ms = int(ms_total / procesados) if procesados > 0 else 0
+            reasons = stats.get("decision_reasons") or {}
             print(
                 f"- {fuente}: descargados={stats['descargados']} | "
                 f"procesados={stats['procesados']} | relevantes={stats['relevantes']} | "
-                f"descartados={stats['descartados']} | omitidos_ya_vistos={stats['omitidos']}"
+                f"descartados={stats['descartados']} | omitidos_ya_vistos={stats['omitidos']} | "
+                f"avg_ms_pdf={avg_ms} | "
+                f"direct_match={int(reasons.get('direct_match', 0) or 0)} | "
+                f"blocked_non_sst={int(reasons.get('blocked_non_sst', 0) or 0)} | "
+                f"gray_rescue={int(reasons.get('gray_rescue', 0) or 0)}"
             )
 
-    fuentes = ["diario", "mintrabajo"]
+    fuentes = ["diario", "mintrabajo", "safetya"]
     for fuente in fuentes:
         relevantes_fuente = [r for r in relevantes if r.get("fuente") == fuente]
         descartados_fuente = [r for r in descartados if r.get("fuente") == fuente]
@@ -36,16 +44,27 @@ def print_report(results: list[dict], source_stats: dict | None = None):
                 print(f"PDF: {r['pdf_path']}")
                 print(f"URL: {r['url_pdf']}")
                 print(f"Keywords: {', '.join(r['keywords'])}")
-                context_hits = r.get("context_hits", [])
-                if context_hits:
+                norma = (r.get("norma_detectada") or "").strip()
+                fragmento = (r.get("fragmento_relevante") or "").strip()
+                pagina = r.get("pagina_detectada")
+                if norma:
+                    print(f"Norma detectada: {norma}")
+                if fragmento:
+                    if pagina:
+                        print(f"Fragmento relevante (pag {pagina}): {fragmento}")
+                    else:
+                        print(f"Fragmento relevante: {fragmento}")
+                elif r.get("context_hits"):
+                    # Fallback de depuracion si aun no hay fragmento persistido.
+                    context_hits = r.get("context_hits", [])
                     print("Contexto (primeras coincidencias):")
-                    for hit in context_hits[:5]:
-                        print(
-                            f"- {hit['keyword']} | pag {hit['page']} | {hit['context']}"
-                        )
+                    for hit in context_hits[:3]:
+                        print(f"- {hit['keyword']} | pag {hit['page']} | {hit['context']}")
 
         if descartados_fuente:
             print("Descartados (sin keywords):")
             for r in descartados_fuente[:10]:
-                print(f"- {r['pdf_path'].name}")
+                path_like = r.get("pdf_path")
+                path_name = getattr(path_like, "name", "") or str(path_like or r.get("url_pdf") or "N/A")
+                print(f"- {path_name}")
     print("="*60 + "\n")

@@ -3,6 +3,7 @@ from functools import lru_cache
 import re
 from datetime import datetime, timezone, timedelta
 import hashlib
+import unicodedata
 from urllib.parse import parse_qs, urlparse
 import subprocess
 import threading
@@ -10,8 +11,26 @@ import sys
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
 
-from config import DB_PATH, DAYS_BACK
-from src.db import get_connection, get_engine, init_db as init_state_db
+from config import (
+    AI_EDITORIAL_ENABLED,
+    AI_EDITORIAL_MAX_CONTEXT_CHARS,
+    AI_EDITORIAL_MODEL,
+    AI_EDITORIAL_TIMEOUT_SECONDS,
+    DB_PATH,
+    DAYS_BACK_DIARIO,
+    DAYS_BACK_MINTRABAJO,
+    DAYS_BACK_SAFETYA,
+    OPENAI_API_KEY,
+)
+from src.db import (
+    get_ai_editorial_summary,
+    get_connection,
+    get_engine,
+    get_pdf_resoluciones,
+    init_db as init_state_db,
+    upsert_ai_editorial_summary,
+)
+from src.ai_editorial_summary import generate_editorial_summary_with_ai
 from src.pdf_text import extract_text, find_keywords_with_context
 from src.keywords import SST_STRONG_KEYWORDS
 
@@ -71,6 +90,14 @@ def _estimate_progress(logs: list[str], running: bool, exit_code) -> int:
     return max(0, min(100, int(progress)))
 
 
+def _normalize_exit_code(raw_code) -> int:
+    """Normalize process exit code for consistent UI display on Windows."""
+    code = int(raw_code)
+    if code > 0x7FFFFFFF:
+        code -= 0x100000000
+    return code
+
+
 def _run_main_worker() -> None:
     global RUN_PROCESS
     base_dir = Path(__file__).parent
@@ -95,13 +122,19 @@ def _run_main_worker() -> None:
             for line in proc.stdout:
                 _append_run_log(line)
         proc.wait()
+        normalized_code = _normalize_exit_code(proc.returncode)
         with RUN_STATE_LOCK:
-            RUN_STATE["exit_code"] = int(proc.returncode)
+            was_stop_requested = bool(RUN_STATE.get("stop_requested"))
+        with RUN_STATE_LOCK:
+            RUN_STATE["exit_code"] = normalized_code
             RUN_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
             RUN_STATE["running"] = False
             RUN_STATE["pid"] = None
             RUN_PROCESS = None
-        _append_run_log(f"[runner] Finalizado con codigo {proc.returncode}")
+        if was_stop_requested:
+            _append_run_log(f"[runner] Finalizado por parada solicitada (codigo {normalized_code})")
+        else:
+            _append_run_log(f"[runner] Finalizado con codigo {normalized_code}")
     except Exception as e:
         _append_run_log(f"[runner] Error ejecutando main.py: {e}")
         with RUN_STATE_LOCK:
@@ -278,6 +311,15 @@ def _normalize_legal_fragment(text: str, max_len: int = 1300) -> str:
     t = re.sub(r"([,(])\s+", r"\1", t)
     # Normalize whitespace
     t = re.sub(r"\s+", " ", t)
+    # Diario (2 columnas): limpia arrastre de nombres de la derecha dentro de la sumilla.
+    t = re.sub(
+        r"(\(copasst\)\s+)([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,6}\s+)(en\s+la\s+direccion)",
+        r"\1\3",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Evita "2026principales" por OCR/maquetado.
+    t = re.sub(r"(?<=\d)(?=[A-Za-zÁÉÍÓÚáéíóúñÑ])", " ", t)
     # Trim OCR garbage before common legal anchors.
     anchors = [
         r"\bpor la cual\b",
@@ -297,6 +339,25 @@ def _normalize_legal_fragment(text: str, max_len: int = 1300) -> str:
             best_pos = pos
     if best_pos > 40:
         t = t[best_pos:]
+
+    # Corta ruido típico fuera de la sumilla (otra columna / bloques inferiores).
+    stop_markers = [
+        r"\bcod(?:igo)?\b",
+        r"\bprincipales\b",
+        r"\bsuplentes\b",
+        r"\bel\s+director\b",
+        r"\bla\s+directora\b",
+        r"\bel\s+ministro\b",
+        r"\bconsiderando\b",
+        r"\bresuelve\b",
+        r"\bart[íi]culo\s+1\b",
+    ]
+    cut = len(t)
+    for pat in stop_markers:
+        m = re.search(pat, t, re.IGNORECASE)
+        if m:
+            cut = min(cut, m.start())
+    t = t[:cut].strip(" ,;:-")
 
     # Keep fragment bounded for readability
     if max_len and len(t) > max_len:
@@ -358,6 +419,12 @@ def _build_norm_blocks(
     grouped: dict[str, list[str]] = {}
     order: list[str] = []
     normalized_context_pool = [_normalize_legal_fragment(c, max_len=1800) for c in (context_lines or []) if c]
+    strict_primary_mode = bool(
+        legal_refs
+        and len(legal_refs) == 1
+        and context_lines
+        and (context_lines[0] or "").strip().lower().startswith("por la cual")
+    )
 
     for ref in legal_refs:
         snippet = ""
@@ -369,7 +436,7 @@ def _build_norm_blocks(
 
         if not snippet and ref_context_map:
             key = ref.lower()
-            parts = ref_context_map.get(key, [])
+            parts = [p for p in ref_context_map.get(key, []) if not _is_considerando_context(p)]
             if parts:
                 # En vista rapida prioriza fragmentos de hits para mantener velocidad.
                 limit = 3 if full_mode else 3
@@ -395,7 +462,7 @@ def _build_norm_blocks(
         if not snippet:
             snippet = "Sin fragmento disponible para esta norma."
         # If detected legal ref produced too-short text, enrich with additional nearby context lines.
-        if snippet and len(snippet) < 1300 and normalized_context_pool:
+        if (not strict_primary_mode) and snippet and len(snippet) < 1300 and normalized_context_pool:
             extras: list[str] = []
             for ctx in normalized_context_pool:
                 if not ctx:
@@ -443,6 +510,8 @@ def _context_lines_from_hits(hits: list[dict], limit: int = 10) -> list[str]:
     for hit in hits:
         ctx = (hit.get("context") or "").strip()
         if not ctx:
+            continue
+        if _is_considerando_context(ctx):
             continue
         key = ctx.lower()
         if key in seen:
@@ -544,11 +613,972 @@ def _extract_document_header(full_text: str) -> tuple[str, str]:
     return title, subtitle
 
 
+def _is_considerando_context(text: str) -> bool:
+    if not text:
+        return False
+    t = re.sub(r"\s+", " ", text.strip()).lower()
+    return "considerando" in t[:220]
+
+
+def _strip_accents(text: str) -> str:
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _normalize_preview_context(fuente: str, text: str) -> str:
+    value = re.sub(r"\s+", " ", (text or "")).strip()
+    if not value:
+        return ""
+    if str(fuente or "").lower() == "mintrabajo":
+        value = value.strip(" \"'")
+        value = re.sub(r"\bautoevaluacines\b", "autoevaluaciones", value, flags=re.IGNORECASE)
+        value = re.sub(r"\bsgsst\b", "SG-SST", value, flags=re.IGNORECASE)
+        prev = None
+        while prev != value:
+            prev = value
+            value = re.sub(r"\b([A-Za-zÁÉÍÓÚáéíóú])\s+([A-Za-zÁÉÍÓÚáéíóú])\b", r"\1\2", value)
+    return value
+
+
+def _decision_reason_copy(reason: str, is_match: bool) -> str:
+    key = (reason or "").strip().lower()
+    if key == "direct_match":
+        return "Entró por coincidencia directa con las reglas configuradas."
+    if key == "gray_rescue":
+        return "Entró por un caso gris que la regla actual decidió rescatar."
+    if key == "blocked_non_sst":
+        return "Se descartó porque no mostró señales suficientes para SST."
+    if is_match:
+        return "Entró como relevante con la lógica actual."
+    return "Se descartó con la lógica actual."
+
+
+def _build_decision_info(row, child_rows: list[dict]) -> list[dict]:
+    source = str(row.get("fuente") or "").lower()
+    items: list[dict] = []
+    for child in child_rows or []:
+        title = (child.get("titulo_resolucion") or row.get("norma_detectada") or "").strip()
+        reason = (child.get("decision_reason") or "").strip().lower()
+        is_match = bool(int(child.get("es_sst") or 0))
+        if not title and not reason:
+            continue
+        items.append(
+            {
+                "title": title or "Norma",
+                "status": "Relevante" if is_match else "Descartada",
+                "reason": reason or ("direct_match" if is_match else "blocked_non_sst"),
+                "summary": _decision_reason_copy(reason, is_match),
+            }
+        )
+    if items:
+        return items
+
+    fallback_reason = "direct_match" if bool(int(row.get("match_flag") or 0)) else "blocked_non_sst"
+    fallback_title = (row.get("norma_detectada") or "").strip() or ("Norma " + source if source else "Norma")
+    return [
+        {
+            "title": fallback_title,
+            "status": "Relevante" if bool(int(row.get("match_flag") or 0)) else "Descartada",
+            "reason": fallback_reason,
+            "summary": _decision_reason_copy(fallback_reason, bool(int(row.get("match_flag") or 0))),
+        }
+    ]
+
+
+def _infer_entity_from_context(fuente: str, title: str, fragment: str) -> str:
+    source = str(fuente or "").lower()
+    text = f"{title} {fragment}".lower()
+    if "ministerio del trabajo" in text or source == "mintrabajo":
+        return "Ministerio del Trabajo"
+    if source == "safetya":
+        return "SafetyYA"
+    if "congreso" in text:
+        return "Congreso de Colombia"
+    return ""
+
+
+def _friendly_source_label(fuente: str) -> str:
+    source = str(fuente or "").strip().lower()
+    if source == "mintrabajo":
+        return "MinTrabajo"
+    if source == "safetya":
+        return "SafetYA"
+    if source == "diario":
+        return "Diario Oficial"
+    return str(fuente or "").strip()
+
+
+def _build_summary_sentence(title: str, fragment: str) -> str:
+    fragment = _normalize_preview_context("", fragment)
+    if not fragment:
+        return ""
+    clean = fragment.strip().strip(".")
+    if not clean:
+        return ""
+    low = clean.lower()
+    if title:
+        if low.startswith("por la cual") or low.startswith("por medio de la cual") or low.startswith("mediante la cual") or low.startswith("por el cual"):
+            return f"{title} {clean[0].lower() + clean[1:]}.".replace("..", ".")
+        if low.startswith("registro anual"):
+            return f"{title} fija directrices sobre {clean.lower()}.".replace("..", ".")
+        if low.startswith("la circular") or low.startswith("el decreto") or low.startswith("la resolucion") or low.startswith("la resolución"):
+            return clean + "."
+        return f"{title} desarrolla {clean[0].lower() + clean[1:]}.".replace("..", ".")
+    if clean and clean[0].islower():
+        clean = clean[0].upper() + clean[1:]
+    return clean + "."
+
+
+def _build_detail_sentence(title: str, fragment: str, entity: str, source: str) -> str:
+    lowered = (fragment or "").lower()
+    source_label = _friendly_source_label(source)
+    if "sg-sst" in lowered or "sgsst" in lowered:
+        return (
+            "La disposicion se enfoca en el seguimiento anual de autoevaluaciones y en la "
+            "actualizacion de planes de mejoramiento, de manera que los obligados mantengan "
+            "evidencia, trazabilidad y cierre de brechas frente a los estandares minimos."
+        )
+    if "practicas laborales" in lowered or "contrato de aprendizaje" in lowered:
+        return (
+            "La medida redefine condiciones operativas para el desarrollo de practicas laborales "
+            "y del contrato de aprendizaje, con incidencia en la vinculacion, supervision y "
+            "cumplimiento de obligaciones por parte de empleadores y actores formativos."
+        )
+    if "derechos laborales" in lowered:
+        return (
+            "El texto fija lineamientos de proteccion para la poblacion trabajadora y delimita "
+            "conductas que no deben interferir con el ejercicio de derechos laborales en el "
+            "contexto regulado por la circular."
+        )
+    if entity == "Ministerio del Trabajo":
+        return (
+            f"Segun la informacion visible en {source_label}, la norma fija lineamientos con "
+            "impacto operativo para sujetos regulados o vigilados por el Ministerio del Trabajo."
+        )
+    if title:
+        return (
+            f"La ficha visible en {source_label} sugiere que {title} introduce reglas de aplicacion "
+            "practica que requieren lectura y seguimiento por parte de los obligados."
+        )
+    return ""
+
+
+def _build_impact_sentence(fragment: str, entity: str) -> str:
+    lowered = (fragment or "").lower()
+    if "sg-sst" in lowered or "sgsst" in lowered:
+        return (
+            "Impone o actualiza obligaciones de seguimiento documental, autoevaluacion y "
+            "planes de mejoramiento dentro del Sistema de Gestion de Seguridad y Salud en el Trabajo."
+        )
+    if "practicas laborales" in lowered or "contrato de aprendizaje" in lowered:
+        return (
+            "Ajusta reglas aplicables a las practicas laborales y al contrato de aprendizaje, "
+            "con impacto directo en empleadores, aprendices y entidades vinculadas."
+        )
+    if "derechos laborales" in lowered:
+        return (
+            "Refuerza deberes de proteccion frente a la poblacion trabajadora y delimita conductas "
+            "que no deben afectar el ejercicio de derechos laborales."
+        )
+    if entity == "Ministerio del Trabajo":
+        return (
+            "Tiene impacto operativo para los sujetos bajo vigilancia del Ministerio del Trabajo, "
+            "segun el alcance concreto definido por la norma."
+        )
+    return ""
+
+
+def _build_subjects_sentence(fragment: str) -> str:
+    lowered = (fragment or "").lower()
+    if "sg-sst" in lowered or "sgsst" in lowered:
+        return (
+            "Empleadores, responsables del SG-SST y sujetos obligados a presentar "
+            "autoevaluaciones o planes de mejoramiento."
+        )
+    if "practicas laborales" in lowered or "contrato de aprendizaje" in lowered:
+        return "Empleadores, practicantes, aprendices y organizaciones vinculadas al contrato de aprendizaje."
+    if "derechos laborales" in lowered:
+        return "Empleadores y poblacion trabajadora en el marco de obligaciones y garantias laborales."
+    if "ministerio del trabajo" in lowered:
+        return "Sujetos bajo inspeccion, vigilancia o regulacion del Ministerio del Trabajo."
+    return ""
+
+
+def _build_object_sentence(title: str, fragment: str) -> str:
+    clean = _normalize_preview_context("", fragment)
+    if not clean:
+        return ""
+    text = clean.strip().strip(".")
+    lowered = text.lower()
+    if lowered.startswith("registro anual"):
+        return "Define el reporte anual de autoevaluaciones y planes de mejoramiento vinculados a los estandares minimos."
+    if lowered.startswith("por la cual") or lowered.startswith("por medio de la cual") or lowered.startswith("mediante la cual") or lowered.startswith("por el cual"):
+        return text[0].upper() + text[1:] + "."
+    if "practicas laborales" in lowered or "contrato de aprendizaje" in lowered:
+        return "Regula condiciones aplicables a las practicas laborales y al contrato de aprendizaje."
+    if title:
+        return f"La norma tiene por objeto {text[0].lower() + text[1:]}.".replace("..", ".")
+    return text + "."
+
+
+def _build_legal_summary(row, legal_refs: list[str], context_lines: list[str]) -> dict:
+    if not bool(int(row.get("match_flag") or 0)):
+        return {}
+    title = (legal_refs[0] if legal_refs else (row.get("norma_detectada") or "")).strip()
+    fragment = (" ".join(context_lines or []) or (row.get("fragmento_relevante") or "")).strip()
+    fragment = _normalize_preview_context(row.get("fuente", ""), fragment)
+    if not title and not fragment:
+        return {}
+
+    entity = _infer_entity_from_context(row.get("fuente", ""), title, fragment)
+    summary = _build_summary_sentence(title, fragment) or fragment
+    detail = _build_detail_sentence(title, fragment, entity, row.get("fuente") or "")
+    scope = ""
+    impact = ""
+    subjects = _build_subjects_sentence(fragment)
+    obj = _build_object_sentence(title, fragment)
+    lowered = fragment.lower()
+    if "sg-sst" in lowered or "sgsst" in lowered:
+        scope = (
+            "Aplica a empleadores y demas obligados que deben reportar autoevaluaciones, "
+            "planes de mejoramiento o actuaciones vinculadas con los estandares minimos del SG-SST."
+        )
+    elif "practicas laborales" in lowered or "contrato de aprendizaje" in lowered:
+        scope = (
+            "Aplica a empleadores, escenarios de practicas laborales y actores vinculados "
+            "al contrato de aprendizaje en el marco definido por la norma."
+        )
+    elif "derechos laborales" in lowered:
+        scope = (
+            "Aplica a empleadores y poblacion trabajadora frente al cumplimiento "
+            "de obligaciones y garantias laborales descritas por la norma."
+        )
+    elif entity == "Ministerio del Trabajo":
+        scope = "Aplica a los sujetos regulados por el Ministerio del Trabajo segun el objeto y alcance descritos en la norma."
+    impact = _build_impact_sentence(fragment, entity)
+
+    return {
+        "title": title,
+        "entity": entity,
+        "summary": summary,
+        "detail": detail,
+        "object": obj,
+        "scope": scope,
+        "impact": impact,
+        "subjects": subjects,
+        "source_label": _friendly_source_label(row.get("fuente") or ""),
+    }
+
+
+def _normalize_ai_editorial_summary(summary_row, formal_title: str) -> dict:
+    if not summary_row:
+        return {}
+    data = dict(summary_row)
+    title = re.sub(r"\s+", " ", (data.get("titulo_editorial") or "").strip())
+    if not title:
+        title = formal_title
+    data["titulo_editorial"] = title
+    data["resumen_general"] = re.sub(r"\s+", " ", (data.get("resumen_general") or "").strip())
+    data["error_mensaje"] = re.sub(r"\s+", " ", (data.get("error_mensaje") or "").strip())
+    data["estado"] = (data.get("estado") or "").strip().lower() or "pending"
+    return data
+
+
+def _build_ai_editorial_context(
+    row,
+    context_lines: list[str],
+    local_path: Path | None,
+    legal_summary: dict | None = None,
+) -> dict:
+    fragment = _normalize_preview_context(
+        row.get("fuente", ""),
+        (" ".join(context_lines or []) or (row.get("fragmento_relevante") or "")).strip(),
+    )
+    additional_parts: list[str] = []
+    if legal_summary:
+        for key in ("detail", "object", "impact"):
+            value = re.sub(r"\s+", " ", (legal_summary.get(key) or "").strip())
+            if value and value.lower() not in fragment.lower():
+                additional_parts.append(value)
+    if local_path and local_path.exists():
+        raw_text = extract_text(local_path, max_pages=1)
+        raw_text = _normalize_preview_context(row.get("fuente", ""), raw_text)
+        if raw_text:
+            candidate = raw_text[:900].strip()
+            if candidate and candidate.lower() not in fragment.lower():
+                additional_parts.append(candidate)
+    additional_context = " ".join(additional_parts).strip()
+    if additional_context:
+        additional_context = additional_context[:900].rsplit(" ", 1)[0]
+
+    return {
+        "fuente": _friendly_source_label(row.get("fuente") or ""),
+        "norma_detectada": (row.get("norma_detectada") or "").strip(),
+        "fecha_origen": (row.get("fecha_origen") or row.get("fecha_captura") or "").strip(),
+        "fragmento_relevante": fragment,
+        "contexto_adicional_corto": additional_context,
+    }
+
+
+def _format_primary_norm(raw_kind: str, raw_number: str, raw_year: str) -> str:
+    kind = (raw_kind or "").strip().lower()
+    if "resoluci" in kind:
+        k = "Resolucion"
+    elif "decreto" in kind:
+        k = "Decreto"
+    elif "ley" in kind:
+        k = "Ley"
+    elif "circular" in kind:
+        k = "Circular"
+    elif "acuerdo" in kind:
+        k = "Acuerdo"
+    else:
+        k = "Norma"
+    num = re.sub(r"\s+", "", (raw_number or "").strip())
+    year = (raw_year or "").strip()
+    if not num or not year:
+        return ""
+    return f"{k} numero {num} de {year}"
+
+
+def _extract_primary_norm_and_sumilla(
+    local_path: Path,
+    full_text_hint: str = "",
+    force_diario_strict: bool = False,
+    preferred_page: int | None = None,
+) -> tuple[str, str]:
+    """
+    Extract the emitted norm title and principal "por la cual..." summary.
+    Prioriza encabezado de resolucion (Diario) para evitar mezclar columnas/considerandos.
+    """
+
+    def _merge_sumilla_and_first_body(sumilla: str, segment: str) -> str:
+        """
+        Diario: agrega contexto corto de cuerpo legal desde la misma columna.
+        Evita considerar/resuelve y evita texto de otra columna.
+        """
+        base = _normalize_legal_fragment(sumilla or "", max_len=900)
+        seg = _normalize_legal_fragment(segment or "", max_len=2200)
+        if not base:
+            return ""
+        if not seg:
+            return base
+
+        low = seg.lower()
+        body_start = -1
+        for pat in (
+            r"\bcod\s*:\s*\d+\b",
+            r"\bel\s+director\b",
+            r"\bla\s+directora\b",
+            r"\bel\s+ministro\b",
+        ):
+            m = re.search(pat, low, re.IGNORECASE)
+            if m:
+                body_start = m.start()
+                break
+        if body_start < 0:
+            return base
+
+        body = seg[body_start:]
+        cut = len(body)
+        for pat in (
+            r"\bconsiderando\b",
+            r"\bresuelve\b",
+            r"\bart[íi]culo\s+1\b",
+        ):
+            m = re.search(pat, body, re.IGNORECASE)
+            if m:
+                cut = min(cut, m.start())
+        body = _normalize_legal_fragment(body[:cut], max_len=460)
+        if not body:
+            return base
+        merged = f"{base} {body}".strip()
+        return _normalize_legal_fragment(merged, max_len=1000)
+
+    def _extract_diario_primary_by_layout(path: Path) -> tuple[str, str]:
+        try:
+            import pdfplumber
+        except Exception:
+            return "", ""
+
+        try:
+            with pdfplumber.open(path) as pdf:
+                if not pdf.pages:
+                    return "", ""
+                page = pdf.pages[0]
+                width = float(getattr(page, "width", 0.0) or 0.0)
+                if width <= 0:
+                    return "", ""
+                mid = width * 0.5
+
+                words = page.extract_words(
+                    x_tolerance=2,
+                    y_tolerance=3,
+                    use_text_flow=False,
+                    keep_blank_chars=False,
+                ) or []
+                words = [
+                    w for w in words
+                    if ((float(w.get("x0", 0.0)) + float(w.get("x1", 0.0))) / 2.0) < mid
+                ]
+        except Exception:
+            return "", ""
+
+        if not words:
+            return "", ""
+
+        grouped: dict[int, list[dict]] = {}
+        for w in words:
+            top = float(w.get("top", 0.0))
+            key = int(round(top / 3.0))
+            grouped.setdefault(key, []).append(w)
+
+        lines: list[dict] = []
+        gap_threshold = 40.0
+        for _, arr in grouped.items():
+            arr = sorted(arr, key=lambda x: float(x.get("x0", 0.0)))
+            segments: list[list[dict]] = []
+            current: list[dict] = []
+            prev_x1 = None
+            for w in arr:
+                x0w = float(w.get("x0", 0.0))
+                x1w = float(w.get("x1", x0w))
+                if prev_x1 is None:
+                    current = [w]
+                else:
+                    if (x0w - prev_x1) >= gap_threshold and current:
+                        segments.append(current)
+                        current = [w]
+                    else:
+                        current.append(w)
+                prev_x1 = x1w
+            if current:
+                segments.append(current)
+
+            for seg in segments:
+                txt = " ".join((x.get("text") or "").strip() for x in seg if (x.get("text") or "").strip())
+                if not txt:
+                    continue
+                x0 = min(float(x.get("x0", 0.0)) for x in seg)
+                x1 = max(float(x.get("x1", x0)) for x in seg)
+                top = sum(float(x.get("top", 0.0)) for x in seg) / max(1, len(seg))
+                col = 0 if ((x0 + x1) / 2.0) < mid else 1
+                lines.append({"text": txt, "top": top, "col": col})
+
+        if not lines:
+            return "", ""
+        lines.sort(key=lambda x: x["top"])
+
+        title_pat = re.compile(r"\bresolucion\s+numero\s+([0-9]{1,20})\s+de\s+((?:19|20)\d{2})\b", re.IGNORECASE)
+        stop_pat = re.compile(
+            r"\b(el\s+ministro|la\s+directora|cod(?:igo)?|considerando|resuelve|art[íi]culo\s+1)\b",
+            re.IGNORECASE,
+        )
+
+        sst_terms = [
+            "seguridad y salud en el trabajo",
+            "sg-sst",
+            "sgsst",
+            "salud ocupacional",
+            "riesgos laborales",
+            "copasst",
+            "seguridad social integral",
+            "afiliacion al sistema",
+            "internos de medicina",
+            "salud y proteccion social",
+        ]
+        non_sst_terms = [
+            "desagregacion presupuestal",
+            "gestion financiera publica",
+            "deuda publica",
+            "credito publico",
+            "hacienda y credito publico",
+            "presupuesto de ingresos y gastos",
+            "adicion en el presupuesto",
+        ]
+
+        best_title = ""
+        best_sum = ""
+        best_score = -10_000
+
+        for i, ln in enumerate(lines):
+            txt_norm = _strip_accents((ln.get("text") or "").strip()).lower()
+            mt = title_pat.search(txt_norm)
+            if not mt:
+                continue
+            # El encabezado de la resolucion va en la parte superior de la pagina.
+            if float(ln.get("top", 0.0)) > 240:
+                continue
+
+            title = f"Resolucion numero {mt.group(1)} de {mt.group(2)}"
+            target_col = int(ln.get("col", 0))
+            title_top = float(ln.get("top", 0.0))
+
+            collected: list[str] = []
+            found_por = False
+            for nxt in lines[i + 1 :]:
+                if int(nxt.get("col", 0)) != target_col:
+                    continue
+                if float(nxt.get("top", 0.0)) <= title_top:
+                    continue
+                if float(nxt.get("top", 0.0)) > (title_top + 170):
+                    break
+
+                raw_line = (nxt.get("text") or "").strip()
+                norm_line = _strip_accents(raw_line).lower()
+                if stop_pat.search(norm_line):
+                    break
+                if not found_por:
+                    if "por la cual" not in norm_line:
+                        continue
+                    found_por = True
+                collected.append(raw_line)
+                if len(collected) >= 6:
+                    break
+                if raw_line.endswith("."):
+                    break
+
+            sumilla = _normalize_legal_fragment(" ".join(collected), max_len=820)
+            if sumilla and "por la cual" in _strip_accents(sumilla).lower():
+                m_por = re.search(r"(por\s+la\s+cual\b.*)", _strip_accents(sumilla), re.IGNORECASE)
+                if m_por:
+                    sumilla = _normalize_legal_fragment(m_por.group(1), max_len=820)
+
+            candidate = f"{title} {sumilla}"
+            score = 0
+            if any(x in candidate.lower() for x in sst_terms):
+                score += 6
+            if any(x in candidate.lower() for x in non_sst_terms):
+                score -= 8
+            if sumilla.lower().startswith("por la cual"):
+                score += 2
+
+            if score > best_score:
+                best_score = score
+                best_title = title
+                best_sum = sumilla
+
+        if best_title and best_score >= 2:
+            return best_title, best_sum
+        return "", ""
+
+    def _extract_diario_header_left_text(path: Path) -> str:
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(path) as pdf:
+                if not pdf.pages:
+                    return ""
+                page = pdf.pages[0]
+                w = float(getattr(page, "width", 0.0) or 0.0)
+                h = float(getattr(page, "height", 0.0) or 0.0)
+                if w <= 0 or h <= 0:
+                    return ""
+
+                boxes = [
+                    (0, 0, w * 0.70, h * 0.62),
+                    (0, 0, w * 0.75, h * 0.72),
+                    (0, 0, w, h * 0.62),
+                ]
+                chunks: list[str] = []
+                for box in boxes:
+                    try:
+                        crop = page.crop(box)
+                        txt = crop.extract_text(layout=True) or crop.extract_text() or ""
+                    except Exception:
+                        txt = ""
+                    txt = re.sub(r"\s+", " ", (txt or "")).strip()
+                    if txt:
+                        chunks.append(txt)
+                return "\n".join(chunks)
+        except Exception:
+            return ""
+
+    def _extract_diario_left_column_strict(path: Path) -> tuple[str, str]:
+        """
+        Diario Oficial: lectura estricta de columna izquierda (pagina 1),
+        para evitar mezclar texto con la columna derecha.
+        """
+        try:
+            import pdfplumber
+        except Exception:
+            return "", ""
+
+        try:
+            with pdfplumber.open(path) as pdf:
+                if not pdf.pages:
+                    return "", ""
+                page_idx = 0
+                if preferred_page and int(preferred_page) > 0:
+                    candidate = int(preferred_page) - 1
+                    if 0 <= candidate < len(pdf.pages):
+                        page_idx = candidate
+                page = pdf.pages[page_idx]
+                w = float(getattr(page, "width", 0.0) or 0.0)
+                h = float(getattr(page, "height", 0.0) or 0.0)
+                if w <= 0 or h <= 0:
+                    return "", ""
+                # Diario siempre es doble columna. Recorte conservador para evitar arrastre de la derecha.
+                left = page.crop((0, 0, w * 0.50, h * 0.82))
+                raw_layout = left.extract_text(layout=True) or ""
+                raw_plain = left.extract_text() or ""
+                raw = raw_plain if len(raw_plain) >= len(raw_layout) else raw_layout
+        except Exception:
+            return "", ""
+
+        if not raw:
+            # Fallback OCR (solo si no hay capa de texto) sobre columna izquierda.
+            try:
+                import pypdfium2 as pdfium
+                import pytesseract
+
+                doc = pdfium.PdfDocument(str(path))
+                page_idx = 0
+                if preferred_page and int(preferred_page) > 0:
+                    candidate = int(preferred_page) - 1
+                    if 0 <= candidate < len(doc):
+                        page_idx = candidate
+                page0 = doc[page_idx]
+                bmp = page0.render(scale=2.5)
+                pil = bmp.to_pil().convert("L")
+                left_img = pil.crop((0, 0, int(pil.width * 0.50), int(pil.height * 0.82)))
+                raw = pytesseract.image_to_string(
+                    left_img,
+                    lang="spa+eng",
+                    config="--oem 1 --psm 6",
+                ) or ""
+            except Exception:
+                raw = ""
+            finally:
+                try:
+                    bmp.close()
+                except Exception:
+                    pass
+                try:
+                    page0.close()
+                except Exception:
+                    pass
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+        if not raw:
+            return "", ""
+        txt = re.sub(r"\s+", " ", raw).strip()
+        norm = _strip_accents(txt).lower()
+
+        title_matches = list(
+            re.finditer(
+                r"\bresolucion\s+numero\s*([0-9][0-9\-\./\s]{0,28})\s*de\s*((?:19|20)\d{2})\b",
+                norm,
+                re.IGNORECASE,
+            )
+        )
+        if not title_matches:
+            return "", ""
+
+        best_title = ""
+        best_sum = ""
+        best_score = -10_000
+        for i, mt in enumerate(title_matches):
+            num_raw = mt.group(1) or ""
+            num = re.sub(r"\D", "", num_raw)
+            year = mt.group(2) or ""
+            if not num:
+                continue
+            title = f"Resolucion numero {num} de {year}"
+            end = title_matches[i + 1].start() if i + 1 < len(title_matches) else len(norm)
+            seg = norm[mt.end():end]
+
+            m_por = re.search(r"\bpor\s+la\s+cual\b", seg, re.IGNORECASE)
+            sumilla = ""
+            if m_por:
+                sumilla_part = seg[m_por.start():]
+                cut = len(sumilla_part)
+                for pat in (
+                    r"\bconsiderando\b",
+                    r"\bresuelve\b",
+                    r"\barticulo\s+1\b",
+                ):
+                    m = re.search(pat, sumilla_part, re.IGNORECASE)
+                    if m:
+                        cut = min(cut, m.start())
+                sumilla_core = _normalize_legal_fragment(sumilla_part[:cut], max_len=820)
+                sumilla = _merge_sumilla_and_first_body(sumilla_core, seg)
+            # Regla canónica Diario: sin "por la cual" no hay resolución válida.
+            if not (sumilla and sumilla.startswith("por la cual")):
+                continue
+
+            candidate = f"{title} {sumilla}"
+            score = 0
+            if any(p in candidate for p in SST_STRONG_KEYWORDS):
+                score += 7
+            if "seguridad y salud en el trabajo" in candidate or "copasst" in candidate:
+                score += 5
+            if any(p in candidate for p in ("desagregacion presupuestal", "deuda publica", "credito publico", "hacienda y credito publico")):
+                score -= 8
+            if sumilla.startswith("por la cual"):
+                score += 2
+            # Preferir encabezados cercanos al inicio del bloque.
+            score += max(0, 5 - i)
+            score += min(len(sumilla), 400) / 100.0
+
+            if score > best_score:
+                best_score = score
+                best_title = title
+                best_sum = sumilla
+
+        if best_title and best_sum and best_score >= 2:
+            return best_title, best_sum
+        return "", ""
+
+    strict_title, strict_sum = _extract_diario_left_column_strict(local_path)
+    if strict_title and strict_sum:
+        return strict_title, strict_sum
+    if force_diario_strict:
+        return strict_title, strict_sum
+
+    layout_title, layout_sum = _extract_diario_primary_by_layout(local_path)
+    if layout_title:
+        return layout_title, layout_sum
+
+    header_text = _extract_diario_header_left_text(local_path)
+    if header_text:
+        header_norm = _strip_accents(re.sub(r"\s+", " ", header_text).strip()).lower()
+        title_matches = list(
+            re.finditer(
+                r"\bresolucion\s+numero\s+([0-9]{1,20})\s+de\s+((?:19|20)\d{2})\b",
+                header_norm,
+                re.IGNORECASE,
+            )
+        )
+        best_title = ""
+        best_sum = ""
+        best_score = -10_000
+
+        header_sst_terms = [
+            "seguridad y salud en el trabajo",
+            "sg-sst",
+            "sgsst",
+            "salud ocupacional",
+            "riesgos laborales",
+            "copasst",
+            "seguridad social integral",
+            "afiliacion al sistema",
+            "internos de medicina",
+            "salud y proteccion social",
+        ]
+        header_non_sst_terms = [
+            "desagregacion presupuestal",
+            "gestion financiera publica",
+            "deuda publica",
+            "credito publico",
+            "hacienda y credito publico",
+            "presupuesto de ingresos y gastos",
+            "adicion en el presupuesto",
+        ]
+
+        def _header_contains_any(t: str, arr: list[str]) -> bool:
+            return any(x in t for x in arr)
+
+        for i, mt in enumerate(title_matches):
+            num = mt.group(1)
+            year = mt.group(2)
+            title = f"Resolucion numero {num} de {year}"
+            seg_end = title_matches[i + 1].start() if i + 1 < len(title_matches) else len(header_norm)
+            seg = header_norm[mt.end():seg_end]
+
+            m_sum = re.search(
+                r"(por\s+la\s+cual\b.*?)(?:\.\s+|(?=\bel\s+ministro\b)|(?=\bconsiderando\b)|(?=\bresuelve\b)|(?=\barticulo\b)|$)",
+                seg[:1400],
+                re.IGNORECASE,
+            )
+            sumilla = ""
+            if m_sum:
+                cand = _normalize_legal_fragment(m_sum.group(1), max_len=820)
+                if cand and not cand.lower().startswith("que "):
+                    sumilla = cand
+
+            candidate_text = f"{title} {sumilla} {seg[:800]}"
+            score = 0
+            if _header_contains_any(candidate_text, header_sst_terms):
+                score += 6
+            if _header_contains_any(candidate_text, header_non_sst_terms):
+                score -= 8
+            if sumilla.startswith("por la cual"):
+                score += 1
+            if "resolucion numero" in title.lower():
+                score += 2
+
+            if score > best_score:
+                best_score = score
+                best_title = title
+                best_sum = sumilla
+
+        # Solo aceptar candidato de cabecera cuando no sea claramente financiero/no-SST.
+        if best_title and best_score >= 2:
+            return best_title, best_sum
+
+    text = (full_text_hint or "").strip()
+    if not text:
+        try:
+            text = extract_text(local_path, max_pages=KEYWORD_SCAN_MAX_PAGES)
+        except Exception:
+            text = ""
+    if not text:
+        return "", ""
+
+    flat = re.sub(r"\s+", " ", text).strip()
+    flat_norm = _strip_accents(flat).lower()
+
+    # Diario: limitar a resoluciones emitidas para evitar tomar leyes/decretos citados.
+    norm_matches = list(
+        re.finditer(
+            r"\bresolucion\s+(?:numero\s+)?([0-9]{1,20})\s+de\s+((?:19|20)\d{2})\b",
+            flat_norm,
+            re.IGNORECASE,
+        )
+    )
+    if not norm_matches:
+        return "", ""
+
+    sst_terms = [
+        "seguridad y salud en el trabajo",
+        "sg-sst",
+        "sgsst",
+        "salud ocupacional",
+        "riesgos laborales",
+        "copasst",
+    ]
+    non_sst_terms = [
+        "desagregacion presupuestal",
+        "gestion financiera publica",
+        "deuda publica",
+        "credito publico",
+        "hacienda y credito publico",
+        "presupuesto de ingresos y gastos",
+        "adicion en el presupuesto",
+    ]
+
+    def contains_any(t: str, arr: list[str]) -> bool:
+        return any(x in t for x in arr)
+
+    best_norm = ""
+    best_sum = ""
+    best_score = -10_000
+
+    def _local_norm_block(start_idx: int, end_idx: int) -> str:
+        seg = flat_norm[start_idx:end_idx]
+        seg = seg[:2600]
+        cut_points = []
+        for marker in (" considerando", "\nconsiderando", " resuelve", "\nresuelve", " articulo 1", " art?­culo 1"):
+            pos = seg.find(marker)
+            if pos > 0:
+                cut_points.append(pos)
+        if cut_points:
+            seg = seg[: min(cut_points)]
+        return seg.strip()
+
+    for i, m_norm in enumerate(norm_matches):
+        norm_title = f"Resolucion numero {m_norm.group(1)} de {m_norm.group(2)}"
+        start_idx = m_norm.start()
+        end_idx = norm_matches[i + 1].start() if i + 1 < len(norm_matches) else len(flat_norm)
+        segment = _local_norm_block(start_idx, end_idx)
+
+        sumilla = ""
+        sumilla_match = re.search(r"(por\s+la\s+cual\b.*?)(?:\.\s+|$)", segment[:1400], re.IGNORECASE)
+        if sumilla_match:
+            raw_sum = sumilla_match.group(1)
+            cand = _normalize_legal_fragment(raw_sum, max_len=820)
+            if cand and not cand.lower().startswith("que "):
+                sumilla = cand
+
+        candidate_text = f"{norm_title} {sumilla} {segment[:900]}"
+        score = 0
+        if contains_any(candidate_text, sst_terms):
+            score += 6
+        if contains_any(candidate_text, non_sst_terms):
+            score -= 6
+        if sumilla.startswith("por la cual"):
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_norm = norm_title
+            best_sum = sumilla
+
+    return best_norm, best_sum
+
+
+def _expand_diario_sumilla_left_column(local_path: Path, current_sumilla: str, preferred_page: int | None = None) -> str:
+    """
+    Intenta ampliar sumilla de Diario desde columna izquierda de pagina 1.
+    Se usa para mejorar registros viejos ya guardados con contexto corto.
+    """
+    base = (current_sumilla or "").strip()
+    if not local_path or not local_path.exists():
+        return base
+    try:
+        import pdfplumber
+        with pdfplumber.open(local_path) as pdf:
+            if not pdf.pages:
+                return base
+            page_idx = 0
+            if preferred_page and int(preferred_page) > 0:
+                candidate = int(preferred_page) - 1
+                if 0 <= candidate < len(pdf.pages):
+                    page_idx = candidate
+            page = pdf.pages[page_idx]
+            w = float(getattr(page, "width", 0.0) or 0.0)
+            h = float(getattr(page, "height", 0.0) or 0.0)
+            if w <= 0 or h <= 0:
+                return base
+            # Diario: columna izquierda estricta para no mezclar texto de la derecha.
+            left = page.crop((0, 0, w * 0.50, h * 0.82))
+            raw = left.extract_text() or left.extract_text(layout=True) or ""
+    except Exception:
+        return base
+
+    if not raw:
+        return base
+    txt = _normalize_legal_fragment(raw, max_len=1600)
+    low = txt.lower()
+    pos = low.find("por la cual")
+    if pos < 0:
+        return base
+    cand = txt[pos:]
+    cut = len(cand)
+    for pat in (
+        r"\bcod\s*:\s*\d+\b",
+        r"\bconsiderando\b",
+        r"\bresuelve\b",
+    ):
+        m = re.search(pat, cand, re.IGNORECASE)
+        if m:
+            cut = min(cut, m.start())
+    cand = _normalize_legal_fragment(cand[:cut], max_len=1200)
+    if len(cand) > len(base):
+        return cand
+    return base
+
+
 def _cache_file_for_pdf(local_path: Path) -> Path:
     stat = local_path.stat()
     raw = f"{local_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
     key = hashlib.sha1(raw.encode("utf-8")).hexdigest()
     return TEXT_CACHE_DIR / f"{key}.txt"
+
+
+def _is_valid_diario_preview_block(title: str, sumilla: str) -> bool:
+    title_norm = _strip_accents((title or "").strip()).lower()
+    sumilla_norm = _strip_accents((sumilla or "").strip()).lower()
+    if not title_norm or not sumilla_norm:
+        return False
+    if not re.search(r"\bresolucion\s+numero\s+.+\s+de\s+(?:19|20)\d{2}\b", title_norm, re.IGNORECASE):
+        return False
+    return sumilla_norm.startswith(("por la cual", "por medio de la cual", "mediante la cual"))
 
 
 def _extract_full_text_cached(local_path: Path) -> str:
@@ -605,6 +1635,33 @@ def _parse_date_from_text(text: str) -> str:
                 pass
 
     return ""
+
+
+def _canonical_legal_reference(text: str, fallback_year: str = "") -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    normalized = unicodedata.normalize("NFKD", raw)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+
+    patterns = [
+        r"\b(circular|decreto|resolucion|ley)\s+(?:externa\s+)?(?:numero|no\.?|n\.?)?\s*0*([0-9]{1,6})\s*(?:de\s*(20[0-9]{2}))?\b",
+        r"\b(circular|decreto|resolucion|ley)\s+0*([0-9]{1,6})\s+de\s+(20[0-9]{2})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, normalized, re.IGNORECASE)
+        if not m:
+            continue
+        kind = (m.group(1) or "").strip().lower()
+        number = str(int(m.group(2)))
+        year = (m.group(3) or "").strip()
+        if not year and fallback_year and re.fullmatch(r"20\d{2}", str(fallback_year).strip()):
+            year = str(fallback_year).strip()
+        if year:
+            return f"{kind}:{number}:{year}"
+        return f"{kind}:{number}"
+    return normalized
 
 
 def _is_plausible_origin_date(date_str: str) -> bool:
@@ -787,7 +1844,7 @@ def get_context_and_legal_ref(local_path: str, keywords_csv: str, raw_query: str
 
 def get_stats(conn) -> dict:
     stats = {}
-    for fuente in ("diario", "mintrabajo"):
+    for fuente in ("diario", "mintrabajo", "safetya"):
         row = conn.execute(
             """
             SELECT
@@ -808,32 +1865,77 @@ def get_stats(conn) -> dict:
     return stats
 
 
+def _classify_dashboard_category(row: dict) -> tuple[str, str]:
+    fuente = str(row.get("fuente", "")).lower()
+    is_match = int(row.get("match_flag", 0) or 0) == 1
+
+    if not is_match:
+        return "No relevante", "neutral"
+
+    if fuente == "safetya":
+        return "Relevancia editorial", "curated"
+
+    return "SST", "sst"
+
+
+def _dashboard_reason_meta(reason: str, is_match: int) -> tuple[str, str]:
+    key = (reason or "").strip().lower()
+    if key == "direct_match":
+        return "Coincidencia directa", "reason-direct"
+    if key == "gray_rescue":
+        return "Rescate gris", "reason-gray"
+    if key == "blocked_non_sst":
+        return "Sin señal SST", "reason-blocked"
+    return ("Coincidencia directa", "reason-direct") if int(is_match or 0) == 1 else ("Descartada por regla", "reason-blocked")
+
+
+def _dashboard_days_back_for_source(fuente: str) -> int:
+    source = str(fuente or "").strip().lower()
+    if source == "diario":
+        return max(0, int(DAYS_BACK_DIARIO))
+    if source == "mintrabajo":
+        return max(0, int(DAYS_BACK_MINTRABAJO))
+    if source == "safetya":
+        return max(0, int(DAYS_BACK_SAFETYA))
+    return max(int(DAYS_BACK_DIARIO), int(DAYS_BACK_MINTRABAJO), int(DAYS_BACK_SAFETYA), 0)
+
+
 def _get_filtered_rows(
     fuente: str,
     q_raw: str,
     match: str,
 ) -> tuple[list[dict], dict, list[dict]]:
     q_terms = _query_terms(q_raw)
-    origin_cutoff = (datetime.now(timezone.utc).date() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
+    days_back = _dashboard_days_back_for_source(fuente)
+    origin_cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
     sql = """
-    SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
+    SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag, keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada,
+           (
+             SELECT pr.decision_reason
+             FROM pdf_resoluciones pr
+             WHERE pr.pdf_id = pdf_procesados.id
+             ORDER BY pr.orden ASC, pr.id ASC
+             LIMIT 1
+           ) AS decision_reason
     FROM pdf_procesados
     WHERE 1=1
     """
     params = []
 
-    # Solo mostrar documentos dentro de la ventana configurada por fecha de origen.
-    sql += " AND fecha_origen IS NOT NULL AND fecha_origen >= ?"
-    params.append(origin_cutoff)
+    # Diario/MinTrabajo usan fecha_origen como filtro fuerte.
+    # SafetYA puede venir solo con fecha_captura hasta afinar parser de fecha del articulo.
+    sql += """
+    AND (
+      (coalesce(fecha_origen, '') <> '' AND fecha_origen >= ?)
+      OR (fuente = 'safetya' AND (coalesce(fecha_origen, '') = '') AND substr(fecha_captura, 1, 10) >= ?)
+    )
+    """
+    params.extend([origin_cutoff, origin_cutoff])
 
-    if fuente in ("diario", "mintrabajo"):
+    if fuente in ("diario", "mintrabajo", "safetya"):
         sql += " AND fuente = ?"
         params.append(fuente)
-
-    if match in ("0", "1"):
-        sql += " AND `match` = ?"
-        params.append(int(match))
 
     for term in q_terms:
         sql += """
@@ -846,7 +1948,7 @@ def _get_filtered_rows(
         like_term = f"%{term}%"
         params.extend([like_term, like_term, like_term])
 
-    sql += " ORDER BY fecha_captura DESC LIMIT 120"
+    sql += " ORDER BY fecha_captura DESC LIMIT 300"
 
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -858,16 +1960,19 @@ def _get_filtered_rows(
         local_exists = bool(local_path and local_path.exists())
 
         # Fast path for web: read precomputed fields from DB only.
-        context_preview = (r["fragmento_relevante"] or "").strip()
+        context_preview = _normalize_preview_context(r["fuente"], r["fragmento_relevante"] or "")
         legal_reference = (r["norma_detectada"] or "").strip()
 
         # No recalcular norma en listado para mantener carga rapida.
 
         raw_origin_date = (r.get("fecha_origen") or "").strip()
+        category_label, category_class = _classify_dashboard_category(r)
+        reason_label, reason_class = _dashboard_reason_meta(r.get("decision_reason") or "", r["match_flag"])
         parsed_rows.append(
             {
                 "id": r["id"],
                 "fuente": r["fuente"],
+                "associated_sources": [str(r["fuente"] or "")],
                 "url_pdf": r["url_pdf"],
                 "fecha_captura": r["fecha_captura"],
                 "fecha_origen": _sanitize_origin_date_for_list(
@@ -884,11 +1989,56 @@ def _get_filtered_rows(
                 "txt_export_url": url_for("export_context_txt_row", row_id=int(r["id"])),
                 "preview_url": url_for("preview_row", row_id=int(r["id"])),
                 "pagina_detectada": int(r["pagina_detectada"]) if r["pagina_detectada"] else None,
+                "category_label": category_label,
+                "category_class": category_class,
+                "decision_reason": (r.get("decision_reason") or "").strip().lower(),
+                "reason_label": reason_label,
+                "reason_class": reason_class,
             }
         )
 
+    source_priority = {"mintrabajo": 0, "safetya": 1, "diario": 2}
+    parsed_rows.sort(
+        key=lambda row: (
+            -int(row.get("match", 0)),
+            source_priority.get(str(row.get("fuente", "")).lower(), 99),
+            str(row.get("fecha_origen", "")),
+        )
+    )
+
+    deduped_rows: list[dict] = []
+    deduped_by_key: dict[str, dict] = {}
+    for row in parsed_rows:
+        year_hint = ""
+        raw_date = (row.get("fecha_origen") or "").strip()
+        if re.match(r"20\d{2}-\d{2}-\d{2}", raw_date):
+            year_hint = raw_date[:4]
+        ref = _canonical_legal_reference(row.get("legal_reference") or "", fallback_year=year_hint)
+        dedupe_key = ref if ref else (row.get("url_pdf", "") or "")
+        existing = deduped_by_key.get(dedupe_key)
+        if existing:
+            merged_sources = {
+                str(source or "").strip()
+                for source in (existing.get("associated_sources") or []) + (row.get("associated_sources") or [])
+                if str(source or "").strip()
+            }
+            existing["associated_sources"] = sorted(
+                merged_sources,
+                key=lambda source: source_priority.get(str(source).lower(), 99),
+            )
+            continue
+        deduped_by_key[dedupe_key] = row
+        deduped_rows.append(row)
+
+    if match in ("0", "1"):
+        parsed_rows = [row for row in deduped_rows if int(row.get("match", 0)) == int(match)]
+    else:
+        parsed_rows = deduped_rows
+
     legal_refs_counter: dict[str, int] = {}
     for row in parsed_rows:
+        if int(row.get("match", 0)) != 1:
+            continue
         ref = (row.get("legal_reference") or "").strip()
         if not ref:
             continue
@@ -1006,9 +2156,9 @@ def export_context_txt_row(row_id: int):
     local_path = Path(row["ruta_local"]) if row["ruta_local"] else None
     local_exists = bool(local_path and local_path.exists())
 
-    context_preview = ""
-    legal_reference = ""
-    if local_exists and int(row["match_flag"]) == 1:
+    context_preview = _normalize_preview_context(row["fuente"], row["fragmento_relevante"] or "")
+    legal_reference = (row["norma_detectada"] or "").strip()
+    if not context_preview and not legal_reference and local_exists and int(row["match_flag"]) == 1:
         context_preview, legal_reference = get_context_and_legal_ref(
             str(local_path),
             row["keywords_encontradas"] or "",
@@ -1070,18 +2220,231 @@ def preview_row(row_id: int):
     if not row:
         abort(404, description="Resultado no encontrado.")
 
+    ai_editorial_summary = {}
+    with get_conn() as conn:
+        try:
+            ai_editorial_summary = _normalize_ai_editorial_summary(
+                get_ai_editorial_summary(conn, int(row["id"])),
+                formal_title=(row["norma_detectada"] or "").strip(),
+            )
+        except Exception:
+            ai_editorial_summary = {}
+
     local_path = Path(row["ruta_local"]) if row["ruta_local"] else None
     local_exists = bool(local_path and local_path.exists())
+    is_sst_match = bool(int(row["match_flag"] or 0))
+    child_rows = []
+    with get_conn() as conn:
+        try:
+            child_rows = get_pdf_resoluciones(conn, int(row["id"]))
+        except Exception:
+            child_rows = []
+    decision_info = _build_decision_info(row, child_rows)
+    db_ref = (row["norma_detectada"] or "").strip()
+    db_fragment = _normalize_preview_context(row["fuente"], row["fragmento_relevante"] or "")
+
+    if str(row.get("fuente", "")).lower() in {"mintrabajo", "safetya"} and db_ref:
+        legal_refs = [db_ref]
+        if db_fragment and not _is_considerando_context(db_fragment) and not db_fragment.strip().lower().startswith("que "):
+            chosen_fragment = _normalize_legal_fragment(db_fragment) or db_fragment
+            context_lines = [chosen_fragment]
+            ref_context_map = {db_ref.lower(): [chosen_fragment]}
+        norm_items = _build_norm_blocks(
+            legal_refs,
+            "",
+            context_lines,
+            ref_context_map=ref_context_map,
+            full_mode=full_mode,
+        )
+        legal_summary = _build_legal_summary(row, legal_refs, context_lines)
+        return render_template(
+            "preview.html",
+            row=dict(row),
+            is_sst_match=is_sst_match,
+            ai_editorial_enabled=AI_EDITORIAL_ENABLED,
+            ai_editorial_summary=ai_editorial_summary,
+            local_exists=local_exists,
+            doc_title="",
+            doc_subtitle="",
+            legal_refs=legal_refs,
+            norm_items=norm_items,
+            context_lines=context_lines,
+            full_text="",
+            preview_text="",
+            full_mode=full_mode,
+            decision_info=decision_info,
+            legal_summary=legal_summary,
+            pagina_detectada=(int(row["pagina_detectada"]) if row["pagina_detectada"] else None),
+            pdf_view_url=url_for("open_pdf", row_id=int(row["id"])),
+        )
+
+    # Diario: vista estricta desde tabla hija persistida (fuente de verdad),
+    # sin recomputar ni mezclar referencias de considerandos en runtime.
+    if str(row.get("fuente", "")).lower() == "diario" and child_rows:
+        child_rows = [
+            c for c in child_rows
+            if _is_valid_diario_preview_block(
+                (c.get("titulo_resolucion") or "").strip(),
+                (c.get("sumilla") or "").strip(),
+            )
+        ]
+    if str(row.get("fuente", "")).lower() == "diario" and child_rows:
+        selected_children = child_rows
+        if is_sst_match:
+            sst_children = [c for c in child_rows if int(c.get("es_sst") or 0) == 1]
+            if sst_children:
+                selected_children = sst_children
+
+        legal_refs: list[str] = []
+        norm_items: list[dict] = []
+        context_lines: list[str] = []
+        seen_refs = set()
+        for ch in selected_children:
+            title = (ch.get("titulo_resolucion") or "").strip()
+            sumilla = _normalize_legal_fragment((ch.get("sumilla") or "").strip(), max_len=900)
+            if title and title.lower() not in seen_refs:
+                seen_refs.add(title.lower())
+                legal_refs.append(title)
+            if title or sumilla:
+                norm_items.append(
+                    {
+                        "titles": [title] if title else ["No detectada"],
+                        "text": sumilla if sumilla else "Sin fragmento disponible para esta norma.",
+                    }
+                )
+                if sumilla:
+                    context_lines.append(sumilla)
+
+        if not norm_items:
+            norm_items = [{"titles": ["No detectada"], "text": "Sin fragmento disponible para esta norma."}]
+
+        return render_template(
+            "preview.html",
+            row=dict(row),
+            is_sst_match=is_sst_match,
+            ai_editorial_enabled=AI_EDITORIAL_ENABLED,
+            ai_editorial_summary=ai_editorial_summary,
+            local_exists=bool(local_path and local_path.exists()),
+            doc_title="",
+            doc_subtitle="",
+            legal_refs=legal_refs,
+            norm_items=norm_items,
+            context_lines=context_lines[:3],
+            full_text="",
+            preview_text="",
+            full_mode=full_mode,
+            decision_info=decision_info,
+            pagina_detectada=(int(row["pagina_detectada"]) if row["pagina_detectada"] else None),
+            pdf_view_url=url_for("open_pdf", row_id=int(row["id"])),
+            pdf_local_url=url_for("open_pdf_local", row_id=int(row["id"])),
+        )
 
     full_text = ""
     doc_title = ""
     doc_subtitle = ""
+    primary_norm_title = ""
+    primary_sumilla = ""
     legal_refs: list[str] = []
     context_lines: list[str] = []
     ref_context_map: dict[str, list[str]] = {}
     norm_items: list[dict] = []
     preview_text = ""
-    if local_exists:
+    # Prioridad 1 (produccion): usar resoluciones hijas si existen.
+    # Esto evita recalculo en preview y mantiene consistencia con lo guardado en pipeline.
+    if is_sst_match and child_rows:
+        sst_children = [c for c in child_rows if int(c.get("es_sst") or 0) == 1]
+        ordered_children = sst_children if sst_children else child_rows
+
+        seen_refs = set()
+        legal_refs = []
+        norm_items = []
+        ref_context_map = {}
+        for ch in ordered_children:
+            title = (ch.get("titulo_resolucion") or "").strip()
+            if title:
+                key = title.lower()
+                if key not in seen_refs:
+                    seen_refs.add(key)
+                    legal_refs.append(title)
+
+            sumilla = (ch.get("sumilla") or "").strip()
+            normalized_sumilla = _normalize_legal_fragment(sumilla, max_len=900) if sumilla else ""
+            if title and normalized_sumilla:
+                ref_context_map.setdefault(title.lower(), [])
+                if normalized_sumilla not in ref_context_map[title.lower()]:
+                    ref_context_map[title.lower()].append(normalized_sumilla)
+            norm_items.append(
+                {
+                    "titles": [title] if title else ["No detectada"],
+                    "text": normalized_sumilla if normalized_sumilla else "Sin fragmento disponible para esta norma.",
+                }
+            )
+
+        if norm_items:
+            first_txt = norm_items[0].get("text") or ""
+            if first_txt and "Sin fragmento disponible" not in first_txt:
+                context_lines = [first_txt]
+                if str(row.get("fuente", "")).lower() == "diario":
+                    expanded = _expand_diario_sumilla_left_column(
+                        local_path,
+                        first_txt,
+                        preferred_page=(int(row["pagina_detectada"]) if row.get("pagina_detectada") else None),
+                    )
+                    if expanded and len(expanded) > len(first_txt):
+                        context_lines = [expanded]
+                        norm_items[0]["text"] = expanded
+
+        # Fallback de robustez: si las hijas existen pero no traen sumilla,
+        # intenta recuperar la sumilla principal del PDF o del fragmento guardado.
+        has_real_sumilla = any(
+            (it.get("text") or "").strip()
+            and "sin fragmento disponible" not in (it.get("text") or "").strip().lower()
+            for it in norm_items
+        )
+        if not has_real_sumilla and local_exists:
+            try:
+                fallback_title, fallback_sumilla = _extract_primary_norm_and_sumilla(
+                    local_path,
+                    preferred_page=(int(row["pagina_detectada"]) if row.get("pagina_detectada") else None),
+                )
+            except Exception:
+                fallback_title, fallback_sumilla = "", ""
+
+            chosen_sumilla = (fallback_sumilla or "").strip()
+            if not chosen_sumilla and db_fragment:
+                # Reusar fragmento persistido solo si no parece considerando.
+                if not _is_considerando_context(db_fragment) and not db_fragment.strip().lower().startswith("que "):
+                    chosen_sumilla = _normalize_legal_fragment(db_fragment)
+
+            if chosen_sumilla:
+                replaced = False
+                for it in norm_items:
+                    item_title = " | ".join(it.get("titles") or []).strip().lower()
+                    if fallback_title and fallback_title.strip().lower() == item_title:
+                        it["text"] = chosen_sumilla
+                        replaced = True
+                        break
+                if not replaced and norm_items:
+                    norm_items[0]["text"] = chosen_sumilla
+                context_lines = [chosen_sumilla]
+
+    # Prioridad de consistencia: para documentos ya clasificados como relevantes,
+    # usa primero la norma/fragmento almacenados en BD (resultado del pipeline).
+    # Evita recalculo en preview que puede mezclar columnas o referencias.
+    if is_sst_match and db_ref and not legal_refs:
+        legal_refs = [db_ref]
+        if db_fragment and not _is_considerando_context(db_fragment) and not db_fragment.strip().lower().startswith("que "):
+            chosen_fragment = _normalize_legal_fragment(db_fragment) or db_fragment
+            if str(row.get("fuente", "")).lower() == "diario":
+                chosen_fragment = _expand_diario_sumilla_left_column(
+                    local_path,
+                    chosen_fragment,
+                    preferred_page=(int(row["pagina_detectada"]) if row.get("pagina_detectada") else None),
+                )
+            context_lines = [chosen_fragment]
+            ref_context_map = {db_ref.lower(): [chosen_fragment]}
+
+    if local_exists and is_sst_match and not legal_refs:
         # Vista rapida: usa un barrido ligero; vista completa: barrido detallado.
         if full_mode:
             hits = _relevant_hits_detailed(
@@ -1130,25 +2493,76 @@ def preview_row(row_id: int):
                         keywords=rel_keywords,
                         max_refs=3,
                     )
-    # Fallback/prioridad de UX: usa fragmento guardado solo cuando no hay contexto extraido en runtime.
-    db_ref = (row["norma_detectada"] or "").strip()
-    db_fragment = (row["fragmento_relevante"] or "").strip()
 
+        # Prioridad legal: titulo de la norma emitida + sumilla "por la cual...".
+        primary_norm_title, primary_sumilla = _extract_primary_norm_and_sumilla(
+            local_path,
+            full_text_hint=full_text if full_mode else "",
+        )
+        if primary_norm_title:
+            legal_refs = [primary_norm_title]
+        if primary_sumilla:
+            # Modo estricto: para preview mostrar solo sumilla principal, sin considerar/contexto adicional.
+            context_lines = [primary_sumilla]
+            if legal_refs:
+                ref_context_map = {legal_refs[0].lower(): [primary_sumilla]}
+        else:
+            # Si no hay sumilla "por la cual", no degradar a fragmentos de considerandos.
+            context_lines = []
+    # Fallback/prioridad de UX: usa fragmento guardado solo cuando no hay contexto extraido en runtime.
     if not legal_refs and db_ref:
         legal_refs = [db_ref]
 
-    if (not full_mode) and db_fragment and not context_lines:
+    if (
+        (not full_mode)
+        and db_fragment
+        and not context_lines
+        and not primary_norm_title
+        and not _is_considerando_context(db_fragment)
+        and not db_fragment.strip().lower().startswith("que ")
+    ):
         chosen_fragment = _normalize_legal_fragment(db_fragment) or db_fragment
         context_lines = [chosen_fragment]
         if legal_refs:
             ref_context_map = {legal_refs[0].lower(): [chosen_fragment]}
-    elif db_fragment and (not context_lines or len(" ".join(context_lines)) < 90):
+    elif (
+        db_fragment
+        and (not context_lines or len(" ".join(context_lines)) < 90)
+        and not primary_norm_title
+        and not _is_considerando_context(db_fragment)
+        and not db_fragment.strip().lower().startswith("que ")
+    ):
         chosen_fragment = _normalize_legal_fragment(db_fragment) or db_fragment
         context_lines = [chosen_fragment]
         if legal_refs:
             ref_context_map.setdefault(legal_refs[0].lower(), [])
             if chosen_fragment not in ref_context_map[legal_refs[0].lower()]:
                 ref_context_map[legal_refs[0].lower()].insert(0, chosen_fragment)
+
+    # Regla fija Diario: solo usar extractor estricto en preview cuando no existan hijas ya persistidas.
+    # Asi evitamos sobreescribir resultados del pipeline principal con un recalculo parcial.
+    if is_sst_match and local_exists and str(row.get("fuente", "")).lower() == "diario" and not child_rows:
+        strict_title, strict_sumilla = _extract_primary_norm_and_sumilla(
+            local_path,
+            force_diario_strict=True,
+            preferred_page=(int(row["pagina_detectada"]) if row.get("pagina_detectada") else None),
+        )
+        if strict_title:
+            legal_refs = [strict_title]
+        if strict_sumilla:
+            strict_sumilla = _expand_diario_sumilla_left_column(
+                local_path,
+                strict_sumilla,
+                preferred_page=(int(row["pagina_detectada"]) if row.get("pagina_detectada") else None),
+            )
+            context_lines = [strict_sumilla]
+            if legal_refs:
+                ref_context_map = {legal_refs[0].lower(): [strict_sumilla]}
+        else:
+            # Regla canónica Diario: si no hay sumilla "por la cual", no mostrar títulos alternos/citados.
+            legal_refs = []
+            context_lines = []
+            ref_context_map = {}
 
     norm_items = _build_norm_blocks(
         legal_refs,
@@ -1157,10 +2571,14 @@ def preview_row(row_id: int):
         ref_context_map=ref_context_map,
         full_mode=full_mode,
     )
+    legal_summary = _build_legal_summary(row, legal_refs, context_lines)
 
     return render_template(
         "preview.html",
         row=dict(row),
+        is_sst_match=is_sst_match,
+        ai_editorial_enabled=AI_EDITORIAL_ENABLED,
+        ai_editorial_summary=ai_editorial_summary,
         local_exists=local_exists,
         doc_title=doc_title,
         doc_subtitle=doc_subtitle,
@@ -1170,13 +2588,127 @@ def preview_row(row_id: int):
         full_text=full_text,
         preview_text=preview_text,
         full_mode=full_mode,
+        decision_info=decision_info,
+        legal_summary=legal_summary,
         pagina_detectada=(int(row["pagina_detectada"]) if row["pagina_detectada"] else None),
         pdf_view_url=url_for("open_pdf", row_id=int(row["id"])),
+        pdf_local_url=url_for("open_pdf_local", row_id=int(row["id"])),
     )
+
+
+@app.route("/preview/<int:row_id>/ai-editorial", methods=["POST"])
+def generate_ai_editorial_for_row(row_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, fuente, url_pdf, fecha_captura, fecha_origen, ruta_local, `match` AS match_flag,
+                   keywords_encontradas, norma_detectada, fragmento_relevante, pagina_detectada
+            FROM pdf_procesados
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (row_id,),
+        ).fetchone()
+
+    if not row:
+        abort(404, description="Resultado no encontrado.")
+
+    if not bool(int(row["match_flag"] or 0)):
+        abort(400, description="El resumen editorial con IA solo esta habilitado para normas relevantes.")
+
+    local_path = Path(row["ruta_local"]) if row["ruta_local"] else None
+    fragment = _normalize_preview_context(row["fuente"], row["fragmento_relevante"] or "")
+    context_lines = [fragment] if fragment else []
+    legal_refs = [(row["norma_detectada"] or "").strip()] if (row["norma_detectada"] or "").strip() else []
+    legal_summary = _build_legal_summary(row, legal_refs, context_lines)
+    editorial_context = _build_ai_editorial_context(row, context_lines, local_path, legal_summary=legal_summary)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        upsert_ai_editorial_summary(
+            conn,
+            pdf_id=int(row["id"]),
+            titulo_editorial=None,
+            resumen_general=None,
+            estado="pending",
+            modelo_ia=AI_EDITORIAL_MODEL,
+            fecha_generacion=now_iso,
+            error_mensaje=None,
+        )
+
+    if not AI_EDITORIAL_ENABLED:
+        result = {"ok": False, "error": "La funcionalidad de resumen editorial con IA esta desactivada."}
+    else:
+        result = generate_editorial_summary_with_ai(
+            api_key=OPENAI_API_KEY,
+            model=AI_EDITORIAL_MODEL,
+            context=editorial_context,
+            max_context_chars=AI_EDITORIAL_MAX_CONTEXT_CHARS,
+            timeout_seconds=AI_EDITORIAL_TIMEOUT_SECONDS,
+        )
+
+    with get_conn() as conn:
+        if result.get("ok"):
+            upsert_ai_editorial_summary(
+                conn,
+                pdf_id=int(row["id"]),
+                titulo_editorial=result.get("titulo_editorial"),
+                resumen_general=result.get("resumen_general"),
+                estado="generated",
+                modelo_ia=result.get("modelo_ia") or AI_EDITORIAL_MODEL,
+                fecha_generacion=now_iso,
+                error_mensaje=None,
+            )
+        else:
+            upsert_ai_editorial_summary(
+                conn,
+                pdf_id=int(row["id"]),
+                titulo_editorial=None,
+                resumen_general=None,
+                estado="failed",
+                modelo_ia=AI_EDITORIAL_MODEL,
+                fecha_generacion=now_iso,
+                error_mensaje=result.get("error") or "No se pudo generar el resumen editorial con IA.",
+            )
+
+    return redirect(url_for("preview_row", row_id=row_id))
+
+
+@app.route("/pdf-local/<int:row_id>")
+def open_pdf_local(row_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT ruta_local
+            FROM pdf_procesados
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (row_id,),
+        ).fetchone()
+
+    if not row:
+        abort(404, description="Resultado no encontrado.")
+
+    local_path = Path(row["ruta_local"]) if row["ruta_local"] else None
+    if local_path and local_path.exists():
+        return send_file(local_path, mimetype="application/pdf", as_attachment=False)
+
+    abort(404, description="PDF local no disponible para este registro.")
 
 
 @app.route("/pdf/<int:row_id>")
 def open_pdf(row_id: int):
+    page_raw = (request.args.get("page") or "").strip()
+    page_num = None
+    if page_raw.isdigit():
+        try:
+            parsed = int(page_raw)
+            if parsed > 0:
+                page_num = parsed
+        except Exception:
+            page_num = None
+
     with get_conn() as conn:
         row = conn.execute(
             """
@@ -1197,6 +2729,12 @@ def open_pdf(row_id: int):
 
     url_pdf = (row["url_pdf"] or "").strip()
     if url_pdf.startswith("http://") or url_pdf.startswith("https://"):
+        if page_num:
+            joiner = "&" if "#" in url_pdf and not url_pdf.endswith(("#", "&")) else ""
+            if "#page=" not in url_pdf:
+                url_pdf = f"{url_pdf}#page={page_num}"
+            elif joiner:
+                url_pdf = f"{url_pdf}{joiner}page={page_num}"
         return redirect(url_pdf)
 
     abort(404, description="Archivo no encontrado y URL remota invalida.")
@@ -1251,12 +2789,13 @@ def api_run_stop():
     with RUN_STATE_LOCK:
         running = bool(RUN_STATE.get("running"))
         proc = RUN_PROCESS
-        RUN_STATE["stop_requested"] = True
 
     if not running or proc is None:
         return jsonify({"ok": False, "message": "No hay ejecucion activa."}), 409
 
     try:
+        with RUN_STATE_LOCK:
+            RUN_STATE["stop_requested"] = True
         proc.terminate()
         _append_run_log("[runner] Solicitud de parada enviada.")
         return jsonify({"ok": True, "message": "Ejecucion detenida (solicitada)."})

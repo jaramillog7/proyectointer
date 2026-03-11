@@ -271,12 +271,14 @@ def _ocr_text_with_fallbacks(pil_image, preferred_lang: str, tesseract_cmd: str)
     return best_text
 
 
-# Extract and concatenate text from all pages (used by full-preview cache)
-def extract_text(pdf_path) -> str:
+# Extract and concatenate text from PDF pages.
+def extract_text(pdf_path, max_pages: int | None = None) -> str:
     text_parts = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                if max_pages is not None and page_num > max_pages:
+                    break
                 txt = page.extract_text() or ""
                 txt = _clean_extracted_text(txt)
                 if txt.strip():

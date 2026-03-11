@@ -6,41 +6,61 @@
   <title>Vista Previa Norma</title>
   <style>
     :root {
-      --bg: #f4f7f5;
+      --bg: #f4f8ff;
       --card: #ffffff;
-      --ink: #112215;
-      --muted: #5b6b60;
-      --line: #dbe5dd;
-      --accent: #1f6f4a;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #dbe4f0;
+      --accent: #2563eb;
+      --accent-soft: #eef4ff;
+      --shadow-card: 0 18px 40px rgba(15, 23, 42, 0.08);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        radial-gradient(860px 320px at 10% -10%, rgba(96,165,250,0.16), transparent 55%),
+        radial-gradient(680px 260px at 100% -8%, rgba(191,219,254,0.46), transparent 58%),
+        var(--bg);
       color: var(--ink);
-      font-family: "Segoe UI", Tahoma, sans-serif;
+      font-family: "Segoe UI Variable", Inter, "Segoe UI", system-ui, sans-serif;
+      line-height: 1.6;
     }
     .wrap {
-      max-width: 1100px;
-      margin: 20px auto;
-      padding: 0 14px 20px;
+      max-width: 1120px;
+      margin: 34px auto;
+      padding: 0 22px 34px;
     }
     .card {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px;
-      margin-bottom: 12px;
+      border-radius: 26px;
+      padding: 22px;
+      margin-bottom: 16px;
+      box-shadow: var(--shadow-card);
     }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    h2 { margin: 0 0 8px; font-size: 18px; color: var(--accent); }
-    .muted { color: var(--muted); font-size: 13px; }
+    h1 {
+      margin: 0 0 8px;
+      font-family: "Segoe UI Variable", Inter, system-ui, sans-serif;
+      font-size: 42px;
+      letter-spacing: -0.04em;
+      line-height: 0.95;
+      font-weight: 800;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .muted { color: var(--muted); font-size: 14px; }
     .btn {
       display: inline-block;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #fff;
+      border-radius: 16px;
+      padding: 12px 17px;
+      background: linear-gradient(180deg, #ffffff, #f4f8ff);
       color: var(--ink);
       text-decoration: none;
       font-weight: 600;
@@ -61,19 +81,54 @@
     li { margin-bottom: 6px; }
     .norm-item {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px;
+      border-radius: 18px;
+      padding: 18px;
       margin-bottom: 10px;
-      background: #fcfdfc;
+      background: linear-gradient(180deg, #fdfefe, #f7faff);
     }
     .norm-title {
       font-weight: 700;
-      margin-bottom: 6px;
+      margin-bottom: 10px;
+      font-size: 19px;
     }
     .norm-text {
       white-space: pre-wrap;
-      line-height: 1.35;
-      font-size: 14px;
+      line-height: 1.72;
+      font-size: 16px;
+    }
+    .reason-item {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 20px;
+      margin-bottom: 10px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(246,249,255,0.98)),
+        var(--accent-soft);
+    }
+    .reason-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .reason-code {
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      color: var(--muted);
+      background: #eef4ff;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .summary-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
     }
     a { color: #0b5ed7; text-decoration: none; }
     a:hover { text-decoration: underline; }
@@ -89,8 +144,111 @@
       </div>
       {% if pagina_detectada %}
       <div class="muted" style="margin-top:6px;">
-        Validaci&oacute;n: <a href="{{ pdf_view_url }}#page={{ pagina_detectada }}" target="_blank">Abrir PDF en p&aacute;gina {{ pagina_detectada }}</a>
+        Validaci&oacute;n:
+        {% if local_exists %}
+        <a href="{{ pdf_local_url }}#page={{ pagina_detectada }}" target="_blank">Abrir PDF local en p&aacute;gina {{ pagina_detectada }}</a>
+        {% else %}
+        <span>PDF local no disponible para salto de p&aacute;gina.</span>
+        {% endif %}
+        {% if pdf_view_url %}
+        | <a href="{{ pdf_view_url }}" target="_blank">Abrir fuente original</a>
+        {% endif %}
       </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      {% if is_sst_match and ai_editorial_enabled %}
+      <h2>Resumen editorial IA</h2>
+      <div class="reason-item" style="margin-bottom:14px;">
+        {% if ai_editorial_summary and ai_editorial_summary.estado == "generated" %}
+        <div class="norm-title">{{ ai_editorial_summary.titulo_editorial }}</div>
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Resumen editorial</span>
+          <div class="norm-text">{{ ai_editorial_summary.resumen_general }}</div>
+        </div>
+        <div class="muted">
+          Modelo: {{ ai_editorial_summary.modelo_ia or "-" }}
+          {% if ai_editorial_summary.fecha_generacion %}
+          | Generado: {{ ai_editorial_summary.fecha_generacion }}
+          {% endif %}
+        </div>
+        {% elif ai_editorial_summary and ai_editorial_summary.estado == "failed" %}
+        <div class="norm-title">Resumen editorial IA</div>
+        <div class="muted" style="margin-bottom:10px;">Estado: fallido</div>
+        <div class="norm-text">{{ ai_editorial_summary.error_mensaje or "No se pudo generar el resumen editorial con IA." }}</div>
+        {% else %}
+        <div class="muted">Todavia no existe un resumen editorial generado con IA para esta norma.</div>
+        {% endif %}
+        <form method="post" action="{{ url_for('generate_ai_editorial_for_row', row_id=row.id) }}" data-ai-editorial-form style="margin-top:14px;">
+          <button type="submit" class="btn" data-ai-editorial-button>Analizar con IA</button>
+          <span class="muted" data-ai-editorial-loading style="display:none; margin-left:10px;">Analizando con IA...</span>
+        </form>
+      </div>
+      {% endif %}
+
+      {% if is_sst_match and legal_summary %}
+      <h2>Resumen jurídico</h2>
+      <div class="reason-item">
+        <div class="norm-title">{{ legal_summary.title }}</div>
+        {% if legal_summary.entity %}
+        <div class="muted" style="margin-bottom:10px;">{{ legal_summary.entity }}</div>
+        {% endif %}
+        {% if legal_summary.summary %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Resumen ejecutivo</span>
+          <div class="norm-text">{{ legal_summary.summary }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.detail %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Desarrollo resumido</span>
+          <div class="norm-text">{{ legal_summary.detail }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.object %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Objeto regulado</span>
+          <div class="norm-text">{{ legal_summary.object }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.scope %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Ámbito de aplicación</span>
+          <div class="norm-text">{{ legal_summary.scope }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.subjects %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Sujetos impactados</span>
+          <div class="norm-text">{{ legal_summary.subjects }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.impact %}
+        <div style="margin-bottom:12px;">
+          <span class="summary-label">Impacto principal</span>
+          <div class="norm-text">{{ legal_summary.impact }}</div>
+        </div>
+        {% endif %}
+        {% if legal_summary.source_label %}
+        <div>
+          <span class="summary-label">Fuente</span>
+          <div class="norm-text">{{ legal_summary.source_label }}</div>
+        </div>
+        {% endif %}
+      </div>
+      {% else %}
+      <h2>Por qué se clasificó así</h2>
+      {% for info in decision_info %}
+      <div class="reason-item">
+        <div class="reason-head">
+          <div class="norm-title">{{ info.title }}</div>
+          <div class="reason-code">{{ info.reason }}</div>
+        </div>
+        <div class="muted" style="margin-bottom:6px;">Estado: {{ info.status }}</div>
+        <div class="norm-text">{{ info.summary }}</div>
+      </div>
+      {% endfor %}
       {% endif %}
     </div>
 
@@ -115,13 +273,15 @@
 
     <div class="card">
       <h2>Normas relevantes completas (sin mostrar todo el PDF)</h2>
-      {% if doc_title %}
+      {% if not is_sst_match %}
+      <div class="muted">No se muestran normas completas porque el documento fue descartado para SST.</div>
+      {% elif doc_title %}
       <div class="norm-title">Titulo principal: {{ doc_title }}</div>
       {% endif %}
-      {% if doc_subtitle %}
+      {% if is_sst_match and doc_subtitle %}
       <div class="muted">{{ doc_subtitle }}</div>
       {% endif %}
-      {% if local_exists and full_mode and norm_items %}
+      {% if is_sst_match and local_exists and full_mode and norm_items %}
       {% for item in norm_items %}
       <div class="norm-item">
         <div class="norm-title">
@@ -133,15 +293,30 @@
         <div class="norm-text">{{ item.text }}</div>
       </div>
       {% endfor %}
-      {% elif local_exists and full_mode %}
+      {% elif is_sst_match and local_exists and full_mode %}
       <div class="muted">No se encontraron normas relevantes para mostrar en modo completo.</div>
-      {% elif local_exists %}
+      {% elif is_sst_match and local_exists %}
       <div class="muted">Vista rápida cargada. Cargar normas relevantes completas puede tardar varios segundos.</div>
       <a class="btn" href="{{ url_for('preview_row', row_id=row.id, full=1) }}">Cargar normas relevantes completas</a>
-      {% else %}
+      {% elif is_sst_match %}
       <div class="muted">No hay archivo local disponible para extraer norma completa.</div>
       {% endif %}
     </div>
   </div>
+  <script>
+    document.querySelectorAll("[data-ai-editorial-form]").forEach(function (form) {
+      form.addEventListener("submit", function () {
+        var button = form.querySelector("[data-ai-editorial-button]");
+        var loading = form.querySelector("[data-ai-editorial-loading]");
+        if (button) {
+          button.disabled = true;
+          button.textContent = "Analizando...";
+        }
+        if (loading) {
+          loading.style.display = "inline";
+        }
+      });
+    });
+  </script>
 </body>
 </html>

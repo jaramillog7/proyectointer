@@ -6,66 +6,82 @@
   <title>Alerta Legal | Dashboard</title>
   <style>
     :root {
-      --bg: #eef5f1;
+      --bg: #f4f8ff;
       --card: #ffffff;
-      --ink: #102017;
-      --muted: #587061;
-      --line: #d4e3d9;
-      --ok: #10874a;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #dbe4f0;
+      --ok: #157f52;
       --bad: #be3228;
-      --accent: #145d3a;
-      --accent-2: #2f9a65;
-      --chip: #eef6f1;
-      --focus: #1f7a4f;
-      --shadow-soft: 0 12px 28px rgba(16, 32, 23, 0.10);
-      --shadow-card: 0 6px 18px rgba(16, 32, 23, 0.06);
+      --accent: #2563eb;
+      --accent-2: #60a5fa;
+      --chip: #eff6ff;
+      --focus: #3b82f6;
+      --surface-soft: #f8fbff;
+      --shadow-soft: 0 28px 70px rgba(37, 99, 235, 0.12);
+      --shadow-card: 0 14px 34px rgba(15, 23, 42, 0.06);
     }
     body[data-theme="dark"] {
-      --bg: #0e1712;
-      --card: #16221b;
-      --ink: #e6f1ea;
-      --muted: #a8bcb0;
-      --line: #2f4639;
-      --ok: #29b96e;
+      --bg: #0d1523;
+      --card: #121d30;
+      --ink: #e7eefb;
+      --muted: #a7b6cf;
+      --line: #2c3c58;
+      --ok: #27b46f;
       --bad: #ea5f54;
-      --accent: #2b9a63;
-      --accent-2: #45b87d;
-      --chip: #1c2d24;
-      --focus: #53c188;
-      --shadow-soft: 0 14px 28px rgba(0, 0, 0, 0.35);
-      --shadow-card: 0 8px 18px rgba(0, 0, 0, 0.25);
+      --accent: #5a8ef0;
+      --accent-2: #7ba7ff;
+      --chip: #17243a;
+      --focus: #79a8ff;
+      --shadow-soft: 0 18px 34px rgba(0, 0, 0, 0.36);
+      --shadow-card: 0 10px 22px rgba(0, 0, 0, 0.26);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background:
-        radial-gradient(1200px 480px at 12% -12%, #e1f0e7, transparent 60%),
-        radial-gradient(900px 380px at 95% -18%, #e9f6ee, transparent 62%),
+        radial-gradient(1200px 520px at 12% -12%, rgba(96, 165, 250, 0.18), transparent 60%),
+        radial-gradient(920px 420px at 95% -18%, rgba(191, 219, 254, 0.45), transparent 62%),
         var(--bg);
       color: var(--ink);
-      font-family: "Segoe UI", "Noto Sans", Tahoma, sans-serif;
+      font-family: "Segoe UI Variable", Inter, "Segoe UI", system-ui, sans-serif;
+      line-height: 1.5;
     }
     body[data-theme="dark"] {
       background:
-        radial-gradient(1200px 480px at 12% -12%, #193025, transparent 60%),
-        radial-gradient(900px 380px at 95% -18%, #14261f, transparent 62%),
+        radial-gradient(1200px 480px at 12% -12%, #173057, transparent 60%),
+        radial-gradient(900px 380px at 95% -18%, #132540, transparent 62%),
         var(--bg);
     }
     .wrap {
-      max-width: 1280px;
-      margin: 18px auto 34px;
-      padding: 0 14px;
+      max-width: 1360px;
+      margin: 30px auto 52px;
+      padding: 0 22px;
     }
     .hero {
-      border: 1px solid #cde0d3;
-      border-radius: 18px;
+      border: 1px solid rgba(219, 228, 240, 0.9);
+      border-radius: 28px;
       background:
-        radial-gradient(900px 240px at -12% -40%, rgba(51, 156, 106, 0.16), transparent 65%),
-        radial-gradient(900px 240px at 110% -50%, rgba(20, 93, 58, 0.10), transparent 65%),
-        linear-gradient(155deg, #ffffff, #f5fbf8);
+        radial-gradient(900px 240px at -12% -40%, rgba(59, 130, 246, 0.16), transparent 65%),
+        radial-gradient(900px 240px at 110% -50%, rgba(37, 99, 235, 0.10), transparent 65%),
+        linear-gradient(155deg, rgba(255,255,255,0.98), rgba(247,250,255,0.98));
       box-shadow: var(--shadow-soft);
-      padding: 16px 16px 14px;
-      margin-bottom: 14px;
+      padding: 30px 30px 24px;
+      margin-bottom: 22px;
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      right: -80px;
+      top: -70px;
+      width: 280px;
+      height: 280px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.18), transparent 68%);
+      pointer-events: none;
     }
     .topbar {
       display: flex;
@@ -77,25 +93,28 @@
     .topbar-left { min-width: 0; }
     h1 {
       margin: 0;
-      font-size: clamp(28px, 3vw, 40px);
-      letter-spacing: 0.1px;
-      line-height: 1.05;
+      font-family: "Segoe UI Variable", Inter, system-ui, sans-serif;
+      font-size: clamp(34px, 3vw, 52px);
+      letter-spacing: -0.04em;
+      line-height: 0.94;
+      font-weight: 800;
     }
     .topbar-subtitle {
-      margin-top: 7px;
-      font-size: 15px;
-      color: #4b6556;
+      margin-top: 12px;
+      font-size: 17px;
+      color: #5b6c86;
+      max-width: 760px;
     }
     .topbar-tip {
-      margin-top: 8px;
+      margin-top: 14px;
       display: inline-flex;
       gap: 8px;
       align-items: center;
-      border: 1px dashed #bfd7c8;
-      color: #335343;
-      background: #f5fbf8;
+      border: 1px solid #dbe7fb;
+      color: #33507d;
+      background: rgba(255,255,255,0.72);
       border-radius: 999px;
-      padding: 5px 10px;
+      padding: 9px 14px;
       font-size: 12px;
       font-weight: 600;
     }
@@ -105,20 +124,21 @@
       background: #1a2c23;
     }
     .topbar-actions {
-      margin-top: 10px;
+      margin-top: 16px;
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
     }
     .small-btn {
-      border: 1px solid #c9ddcf;
-      background: #ffffff;
-      color: #1b4330;
-      border-radius: 10px;
-      padding: 6px 10px;
+      border: 1px solid #d1dcf0;
+      background: rgba(255,255,255,0.86);
+      color: #19467f;
+      border-radius: 999px;
+      padding: 9px 14px;
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
     }
     body[data-theme="dark"] .small-btn {
       border-color: #355748;
@@ -130,11 +150,11 @@
       flex: 0 0 auto;
     }
     .notif-btn {
-      border: 1px solid #cfe0d5;
-      background: linear-gradient(155deg, #ffffff, #f2f8f4);
-      border-radius: 14px;
-      width: 48px;
-      height: 48px;
+      border: 1px solid #d2def3;
+      background: linear-gradient(155deg, #ffffff, #f5f9ff);
+      border-radius: 18px;
+      width: 56px;
+      height: 56px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -171,13 +191,41 @@
       width: min(360px, 88vw);
       max-height: 400px;
       overflow: auto;
-      border: 1px solid #d7e6db;
+      border: 1px solid #d7e1f0;
       border-radius: 14px;
       background: #fff;
       box-shadow: 0 16px 32px rgba(0,0,0,0.14);
       padding: 10px;
       display: none;
       z-index: 50;
+    }
+    .notif-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #e2ebe5;
+    }
+    .notif-panel-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .notif-reset-btn {
+      border: 1px solid #d7e1f0;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .notif-reset-btn:hover {
+      border-color: #9ac4ae;
+      color: var(--ink);
     }
     .notif-item {
       border: 1px solid #e2ebe5;
@@ -206,17 +254,17 @@
       padding: 8px;
     }
     .run-card {
-      margin: 12px 0 16px;
-      border: 1px solid #d8e5dc;
-      border-radius: 14px;
-      background: linear-gradient(155deg, #ffffff, #f6fbf8);
-      padding: 14px;
+      margin: 14px 0 18px;
+      border: 1px solid #d9e2f0;
+      border-radius: 22px;
+      background: linear-gradient(155deg, #ffffff, #f7faff);
+      padding: 18px;
       box-shadow: var(--shadow-card);
     }
     .run-title {
       margin: 0 0 10px 0;
       font-size: 15px;
-      color: #1d4632;
+      color: #1f4175;
       letter-spacing: 0.2px;
     }
     .run-head {
@@ -229,18 +277,18 @@
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: #fff;
       border: none;
-      border-radius: 10px;
-      padding: 10px 14px;
+      border-radius: 16px;
+      padding: 13px 18px;
       font-weight: 700;
       cursor: pointer;
-      box-shadow: 0 5px 14px rgba(24, 96, 63, 0.25);
+      box-shadow: 0 8px 18px rgba(42, 95, 190, 0.28);
     }
     .run-stop-btn {
       background: #f4eceb;
       color: #8c2c24;
       border: 1px solid #e7c5c2;
-      border-radius: 10px;
-      padding: 10px 14px;
+      border-radius: 16px;
+      padding: 13px 18px;
       font-weight: 700;
       cursor: pointer;
     }
@@ -282,6 +330,44 @@
       font-size: 12px;
       color: #3f5749;
     }
+    .run-meta {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .run-meta-chip {
+      border: 1px solid #d2e4d9;
+      background: #edf6f1;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: #2f4d3d;
+      font-weight: 600;
+    }
+    .run-settings-btn {
+      border: 1px solid #d1dcf0;
+      background: #ffffff;
+      color: #1f4277;
+      border-radius: 16px;
+      padding: 13px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .run-settings-panel {
+      margin-top: 10px;
+      border: 1px solid #d9e7de;
+      border-radius: 12px;
+      background: #f9fcfa;
+      padding: 10px;
+      display: none;
+    }
+    .run-settings-title {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      color: #355543;
+    }
     .run-log {
       margin-top: 8px;
       white-space: pre-wrap;
@@ -298,22 +384,24 @@
     .muted { color: var(--muted); }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 15px;
-      margin: 14px 0 20px;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 18px;
+      margin: 18px 0 24px;
     }
     .card {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 14px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+      border-radius: 16px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.03);
     }
     .summary-card {
-      padding: 16px;
-      border-radius: 16px;
-      border: 1px solid #d2e3d8;
-      background: linear-gradient(145deg, #ffffff, #f4faf7 66%);
+      padding: 20px;
+      border-radius: 26px;
+      border: 1px solid #d7e2f0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.94), rgba(246,249,255,0.98)),
+        linear-gradient(145deg, #ffffff, #f4f8ff 66%);
       box-shadow: var(--shadow-card);
     }
     .mini-metrics {
@@ -356,30 +444,31 @@
     }
     .summary-title {
       margin: 0;
-      font-size: 17px;
+      font-size: 14px;
       font-weight: 700;
       color: var(--accent);
-      letter-spacing: 0.2px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
     .summary-total {
-      border: 1px solid #cfe2d6;
-      background: linear-gradient(145deg, #edf6f1, #f7fcf9);
-      border-radius: 12px;
-      padding: 10px 12px;
-      margin-bottom: 10px;
+      border: 1px solid #d6e1f0;
+      background: linear-gradient(145deg, #eff4fd, #fbfdff);
+      border-radius: 20px;
+      padding: 16px 16px;
+      margin-bottom: 12px;
     }
     .summary-total-label {
       font-size: 11px;
-      color: #42604f;
+      color: #50647f;
       text-transform: uppercase;
       letter-spacing: 0.7px;
       margin-bottom: 3px;
     }
     .summary-total-value {
-      font-size: 36px;
+      font-size: 46px;
       font-weight: 800;
       line-height: 1;
-      color: #123524;
+      color: #163865;
       margin: 0;
     }
     .kpi-row {
@@ -389,8 +478,8 @@
     }
     .kpi-chip {
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 9px 10px;
+      border-radius: 16px;
+      padding: 12px 12px;
       background: #fff;
       font-size: 13px;
       display: flex;
@@ -408,17 +497,11 @@
       grid-template-columns: repeat(2, minmax(220px, 1fr));
       gap: 10px;
       background: var(--card);
-      border: 1px solid #d7e6db;
-      border-radius: 14px;
-      padding: 12px;
+      border: 1px solid #d8e2f0;
+      border-radius: 22px;
+      padding: 16px;
       margin-bottom: 16px;
       box-shadow: var(--shadow-card);
-    }
-    .executive-hint {
-      margin-top: -6px;
-      margin-bottom: 12px;
-      font-size: 12px;
-      color: #4a6355;
     }
     .control-group {
       display: flex;
@@ -429,13 +512,13 @@
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.7px;
-      color: #3e5d4d;
+      color: #41597d;
       font-weight: 700;
     }
     input, select, button {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px 12px;
+      border-radius: 14px;
+      padding: 12px 14px;
       font-size: 14px;
       background: #fff;
     }
@@ -468,13 +551,15 @@
       white-space: nowrap;
     }
     .legal-banner {
-      margin: 12px 0 16px;
-      background: linear-gradient(145deg, #edf7f1, #f6fcf8);
-      border: 1px solid #cfe5d7;
-      border-radius: 12px;
-      padding: 11px 12px;
+      margin: 16px 0 20px;
+      background:
+        linear-gradient(145deg, #edf7f1, #f8fdf9),
+        linear-gradient(90deg, rgba(24,79,56,0.08), transparent 35%);
+      border: 1px solid #d7e1f0;
+      border-radius: 22px;
+      padding: 18px 20px;
       font-size: 14px;
-      color: #204330;
+      color: #23446e;
       box-shadow: var(--shadow-card);
     }
     .legal-banner strong { color: #173325; }
@@ -538,8 +623,8 @@
       .notify-sub { font-size: 15px; }
     }
     .table-shell {
-      border: 1px solid #d5e5da;
-      border-radius: 14px;
+      border: 1px solid #d8e2f0;
+      border-radius: 28px;
       overflow: auto;
       box-shadow: var(--shadow-card);
       background: #fff;
@@ -607,31 +692,63 @@
     }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 12px 10px;
+      padding: 18px 14px;
       font-size: 14px;
       vertical-align: top;
       text-align: left;
     }
     th {
-      background: #edf5f0;
-      color: #2a4d37;
+      background: linear-gradient(180deg, #eff4fb, #e9eff9);
+      color: #2b4671;
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.08em;
       position: sticky;
       top: 0;
       z-index: 1;
     }
     tbody tr:nth-child(even) { background: #fbfdfb; }
-    tbody tr:hover { background: #f4faf6; }
+    tbody tr:hover {
+      background: linear-gradient(90deg, rgba(63,127,218,0.08), transparent 28%), #f4f8ff;
+    }
     body[data-theme="dark"] tbody tr:hover { background: #1e3027; }
     .tag {
       display: inline-block;
-      padding: 2px 8px;
+      padding: 6px 11px;
       border-radius: 999px;
       font-size: 12px;
       font-weight: 700;
       color: #fff;
+    }
+    .tag.neutral {
+      background: #e7efea;
+      color: #496155;
+      border: 1px solid #cbdcd1;
+    }
+    .tag.category-sst {
+      background: #dff2e8;
+      color: #0f6c3d;
+      border: 1px solid #b8dfc8;
+    }
+    .tag.category-curated {
+      background: #edf2ff;
+      color: #315ca3;
+      border: 1px solid #ccd9f5;
+    }
+    .tag.reason-direct {
+      background: #eef4ff;
+      color: #234d88;
+      border: 1px solid #d0dbf3;
+    }
+    .tag.reason-gray {
+      background: #fff7e7;
+      color: #8c6214;
+      border: 1px solid #edd79f;
+    }
+    .tag.reason-blocked {
+      background: #f8eeee;
+      color: #8b3830;
+      border: 1px solid #ecc8c4;
     }
     .ok { background: var(--ok); }
     .bad { background: var(--bad); }
@@ -645,14 +762,20 @@
     }
     .source-pill {
       display: inline-block;
-      border: 1px solid #cfe2d6;
-      background: #f2f8f4;
+      border: 1px solid #d0dcf2;
+      background: linear-gradient(180deg, #f5f9ff, #edf3fb);
       border-radius: 999px;
-      padding: 4px 10px;
+      padding: 7px 13px;
       font-size: 12px;
       font-weight: 700;
-      color: #1b4a33;
+      color: #244b83;
       text-transform: capitalize;
+    }
+    .source-associated {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.25;
     }
     .path-text {
       max-width: 540px;
@@ -670,12 +793,12 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      border: 1px solid #d3e4d9;
-      border-radius: 10px;
-      padding: 8px 10px;
+      border: 1px solid #d4def0;
+      border-radius: 18px;
+      padding: 12px 16px;
       text-decoration: none;
-      color: #173a29;
-      background: #f4faf6;
+      color: #204472;
+      background: linear-gradient(180deg, #f7faff, #eef4fd);
       font-weight: 700;
       width: fit-content;
     }
@@ -723,7 +846,7 @@
     }
     @media (max-width: 720px) {
       .wrap {
-        padding: 0 10px;
+        padding: 0 12px;
       }
       .topbar {
         flex-direction: column;
@@ -735,7 +858,7 @@
       .notif-wrap {
         align-self: flex-end;
       }
-      .summary-total-value { font-size: 30px; }
+      .summary-total-value { font-size: 34px; }
       .kpi-row { grid-template-columns: 1fr; }
       .topbar-tip {
         width: 100%;
@@ -745,7 +868,7 @@
         flex-direction: column;
         align-items: stretch;
       }
-      .run-btn, .run-stop-btn {
+      .run-btn, .run-stop-btn, .run-settings-btn {
         width: 100%;
       }
       .topbar-actions {
@@ -755,39 +878,51 @@
         width: 100%;
       }
     }
-    body[data-view="executive"] .path-text,
-    body[data-view="executive"] td:nth-child(7),
-    body[data-view="executive"] th:nth-child(7) {
-      display: none;
-    }
     body[data-theme="dark"] .summary-card,
     body[data-theme="dark"] .run-card,
     body[data-theme="dark"] .legal-banner,
     body[data-theme="dark"] .filters,
     body[data-theme="dark"] .table-shell,
     body[data-theme="dark"] .hero {
-      border-color: #335445;
-      background: linear-gradient(155deg, #15231c, #182b22);
+      border-color: #30415d;
+      background: linear-gradient(155deg, #152138, #18253f);
       color: var(--ink);
     }
     body[data-theme="dark"] .summary-total,
     body[data-theme="dark"] .notif-panel,
     body[data-theme="dark"] .run-log {
       border-color: #355748;
-      background: #1b2c23;
+      background: #18253b;
       color: var(--ink);
+    }
+    body[data-theme="dark"] .run-meta-chip {
+      border-color: #355748;
+      background: #18253b;
+      color: #c8ddd1;
+    }
+    body[data-theme="dark"] .run-settings-btn {
+      border-color: #355748;
+      background: #1b2b23;
+      color: #d0e2d8;
+    }
+    body[data-theme="dark"] .run-settings-panel {
+      border-color: #355748;
+      background: #111b2d;
+    }
+    body[data-theme="dark"] .run-settings-title {
+      color: #b4cbbd;
     }
     body[data-theme="dark"] .kpi-ok {
       border-color: #2f6a4a;
-      background: #193424;
+      background: #173227;
     }
     body[data-theme="dark"] .kpi-bad {
       border-color: #6a3a36;
       background: #36201f;
     }
     body[data-theme="dark"] th {
-      background: #21362c;
-      color: #bdd2c5;
+      background: #1d2e49;
+      color: #d2dff4;
     }
     body[data-theme="dark"] tbody tr:nth-child(even) {
       background: #18271f;
@@ -817,13 +952,16 @@
         <div class="topbar-tip">Actualiza resultados con "Ejecutar analisis" y revisa alertas en la campana.</div>
         <div class="topbar-actions">
           <button id="themeToggle" class="small-btn" type="button">Tema oscuro</button>
-          <button id="viewToggle" class="small-btn" type="button">Modo ejecutivo</button>
         </div>
       </div>
         <div class="notif-wrap">
           <button id="notifBtn" class="notif-btn" type="button" title="Notificaciones">🔔</button>
           <span id="notifBadge" class="notif-badge">0</span>
           <div id="notifPanel" class="notif-panel">
+            <div class="notif-panel-head">
+              <div class="notif-panel-title">Notificaciones</div>
+              <button id="notifResetBtn" class="notif-reset-btn" type="button">Restablecer</button>
+            </div>
             <div id="notifList"></div>
             <div id="notifEmpty" class="notif-empty">No hay notificaciones nuevas.</div>
           </div>
@@ -846,6 +984,7 @@
       <div class="run-head">
         <button id="runMainBtn" class="run-btn" type="button">Ejecutar analisis</button>
         <button id="runMainStopBtn" class="run-stop-btn" type="button" disabled>Parar ejecucion</button>
+        <button id="runSettingsBtn" class="run-settings-btn" type="button">&#9881; Configuracion</button>
         <span id="runMainStatus" class="run-status">Estado: inactivo</span>
       </div>
       <div class="run-progress-wrap">
@@ -854,7 +993,14 @@
         </div>
         <div id="runProgressText" class="run-progress-text">Progreso: 0%</div>
       </div>
-      <div id="runMainLog" class="run-log">Logs de ejecucion apareceran aqui.</div>
+      <div class="run-meta">
+        <span id="runElapsedText" class="run-meta-chip">Tiempo transcurrido: 00:00</span>
+        <span id="runEtaText" class="run-meta-chip">Tiempo estimado restante: --:--</span>
+      </div>
+      <div id="runSettingsPanel" class="run-settings-panel">
+        <h4 class="run-settings-title">Logs de ejecucion</h4>
+        <div id="runMainLog" class="run-log">Logs de ejecucion apareceran aqui.</div>
+      </div>
     </div>
 
     <div class="grid">
@@ -924,6 +1070,39 @@
           </div>
         </div>
       </div>
+      <div class="summary-card">
+        <div class="summary-head">
+          <h3 class="summary-title">SafetYA</h3>
+        </div>
+        <div class="summary-total">
+          <div class="summary-total-label">Total de documentos</div>
+          <div class="summary-total-value">{{ stats.safetya.total }}</div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi-chip kpi-ok">Relevantes <strong>{{ stats.safetya.relevantes }}</strong></div>
+          <div class="kpi-chip kpi-bad">Descartados <strong>{{ stats.safetya.descartados }}</strong></div>
+        </div>
+        <div class="mini-metrics">
+          <div class="mini-line">
+            <span>Distribucion</span>
+            <strong>{{ stats.safetya.total }} docs</strong>
+          </div>
+          <div class="mini-track">
+            <div class="mini-fill-ok" style="width: {{ ((stats.safetya.relevantes / stats.safetya.total) * 100) if stats.safetya.total else 0 }}%;"></div>
+          </div>
+          <div class="mini-line" style="margin-top:5px;">
+            <span>Relevantes</span>
+            <span>{{ (((stats.safetya.relevantes / stats.safetya.total) * 100) if stats.safetya.total else 0) | round(1) }}%</span>
+          </div>
+          <div class="mini-track">
+            <div class="mini-fill-bad" style="width: {{ ((stats.safetya.descartados / stats.safetya.total) * 100) if stats.safetya.total else 0 }}%;"></div>
+          </div>
+          <div class="mini-line" style="margin-top:5px; margin-bottom:0;">
+            <span>Descartados</span>
+            <span>{{ (((stats.safetya.descartados / stats.safetya.total) * 100) if stats.safetya.total else 0) | round(1) }}%</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <form class="filters" method="get">
@@ -933,6 +1112,7 @@
           <option value="" {% if filtro_fuente == "" %}selected{% endif %}>Todas las fuentes</option>
           <option value="diario" {% if filtro_fuente == "diario" %}selected{% endif %}>Diario</option>
           <option value="mintrabajo" {% if filtro_fuente == "mintrabajo" %}selected{% endif %}>MinTrabajo</option>
+          <option value="safetya" {% if filtro_fuente == "safetya" %}selected{% endif %}>SafetYA</option>
         </select>
       </div>
       <div class="control-group">
@@ -944,8 +1124,6 @@
         </select>
       </div>
     </form>
-    <div class="executive-hint">Modo ejecutivo simplifica columnas para una lectura rapida.</div>
-
     {% if legal_refs %}
     <div class="legal-banner">
       <strong>Normas detectadas:</strong>
@@ -980,8 +1158,10 @@
           <th>Fecha</th>
           <th>Fuente</th>
           <th>Estado</th>
-          <th>Norma</th>
+          <th>Categoría</th>
+          <th>Motivo</th>
           <th>Vista previa</th>
+          <th>Norma</th>
           <th>PDF Local</th>
           <th>URL</th>
         </tr>
@@ -992,6 +1172,7 @@
             data-row-id="{{ r.id }}"
             data-match="{{ r.match }}"
             data-fuente="{{ r.fuente }}"
+            data-fecha-captura="{{ r.fecha_captura or '' }}"
             data-norma="{{ r.legal_reference or '' }}">
           <td>
             {% if r.fecha_origen %}
@@ -1001,7 +1182,14 @@
             <div class="small">Fecha estimada (captura)</div>
             {% endif %}
           </td>
-          <td><span class="source-pill">{{ r.fuente }}</span></td>
+          <td>
+            <span class="source-pill">{{ r.fuente }}</span>
+            {% if r.associated_sources and r.associated_sources|length > 1 %}
+            <div class="source-associated">
+              Fuentes asociadas: {{ r.associated_sources|join(", ") }}
+            </div>
+            {% endif %}
+          </td>
           <td>
             {% if r.match == 1 %}
             <span class="tag ok">Relevante</span>
@@ -1010,13 +1198,31 @@
             {% endif %}
           </td>
           <td>
+            {% if r.category_class == "sst" %}
+            <span class="tag category-sst">{{ r.category_label }}</span>
+            {% elif r.category_class == "curated" %}
+            <span class="tag category-curated">{{ r.category_label }}</span>
+            {% else %}
+            <span class="tag neutral">{{ r.category_label }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.reason_class == "reason-direct" %}
+            <span class="tag reason-direct">{{ r.reason_label }}</span>
+            {% elif r.reason_class == "reason-gray" %}
+            <span class="tag reason-gray">{{ r.reason_label }}</span>
+            {% else %}
+            <span class="tag reason-blocked">{{ r.reason_label }}</span>
+            {% endif %}
+          </td>
+          <td><a href="{{ r.preview_url }}" target="_blank">Ver norma completa</a></td>
+          <td>
             {% if r.legal_reference %}
             {{ r.legal_reference }}
             {% else %}
             <span class="small">No detectada</span>
             {% endif %}
           </td>
-          <td><a href="{{ r.preview_url }}" target="_blank">Ver norma completa</a></td>
           <td>
             <div class="pdf-cell">
               <a class="pdf-btn" href="{{ r.pdf_view_url }}" target="_blank" title="{{ r.ruta_local }}">
@@ -1037,7 +1243,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="7">No hay resultados con esos filtros.</td>
+          <td colspan="9">No hay resultados con esos filtros.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -1056,8 +1262,8 @@
       const notifPanel = document.getElementById("notifPanel");
       const notifList = document.getElementById("notifList");
       const notifEmpty = document.getElementById("notifEmpty");
+      const notifResetBtn = document.getElementById("notifResetBtn");
       const themeToggle = document.getElementById("themeToggle");
-      const viewToggle = document.getElementById("viewToggle");
       const pagerPrev = document.getElementById("pagerPrev");
       const pagerNext = document.getElementById("pagerNext");
       const pageSizeSelect = document.getElementById("pageSize");
@@ -1068,12 +1274,60 @@
       const runMainLog = document.getElementById("runMainLog");
       const runProgressFill = document.getElementById("runProgressFill");
       const runProgressText = document.getElementById("runProgressText");
+      const runElapsedText = document.getElementById("runElapsedText");
+      const runEtaText = document.getElementById("runEtaText");
+      const runSettingsBtn = document.getElementById("runSettingsBtn");
+      const runSettingsPanel = document.getElementById("runSettingsPanel");
       if (!notifyBar || !notifyDay || !notifySource || !notifyCount) return;
+
+      let lastRunPayload = null;
+
+      function formatDuration(seconds) {
+        const safe = Math.max(0, Math.floor(Number(seconds) || 0));
+        const h = Math.floor(safe / 3600);
+        const m = Math.floor((safe % 3600) / 60);
+        const s = safe % 60;
+        if (h > 0) {
+          return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+        }
+        return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+      }
+
+      function updateRunTiming(payload) {
+        if (!runElapsedText || !runEtaText) return;
+        const data = payload || lastRunPayload || {};
+        const running = !!data.running;
+        const progress = Math.max(0, Math.min(100, Number(data.progress || 0)));
+        const startedMs = data.started_at ? Date.parse(data.started_at) : NaN;
+        const finishedMs = data.finished_at ? Date.parse(data.finished_at) : NaN;
+
+        if (running && Number.isFinite(startedMs)) {
+          const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+          runElapsedText.textContent = "Tiempo transcurrido: " + formatDuration(elapsedSec);
+          if (progress >= 8 && progress < 100) {
+            const totalEstimated = elapsedSec * (100 / progress);
+            const remaining = Math.max(0, Math.round(totalEstimated - elapsedSec));
+            runEtaText.textContent = "Tiempo estimado restante: " + formatDuration(remaining);
+          } else {
+            runEtaText.textContent = "Tiempo estimado restante: calculando...";
+          }
+          return;
+        }
+
+        if (!running && Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs) {
+          const elapsedSec = Math.max(0, Math.floor((finishedMs - startedMs) / 1000));
+          runElapsedText.textContent = "Tiempo transcurrido: " + formatDuration(elapsedSec);
+          runEtaText.textContent = "Tiempo estimado restante: 00:00";
+          return;
+        }
+
+        runElapsedText.textContent = "Tiempo transcurrido: 00:00";
+        runEtaText.textContent = "Tiempo estimado restante: --:--";
+      }
 
       const rows = Array.from(document.querySelectorAll(".result-row"));
       const noDataRow = document.querySelector("tbody tr td[colspan='7']")?.parentElement || null;
       const themeStorageKey = "alerta_legal_theme_v1";
-      const viewStorageKey = "alerta_legal_view_v1";
       const pageSizeStorageKey = "alerta_legal_page_size_v1";
       const pageStorageKey = "alerta_legal_page_v1";
 
@@ -1117,13 +1371,6 @@
         }
       }
 
-      function applyView(mode) {
-        document.body.setAttribute("data-view", mode);
-        if (viewToggle) {
-          viewToggle.textContent = mode === "executive" ? "Modo completo" : "Modo ejecutivo";
-        }
-      }
-
       function renderPagination() {
         const totalRows = rows.length;
         if (!totalRows) {
@@ -1151,9 +1398,7 @@
       }
 
       const savedTheme = localStorage.getItem(themeStorageKey) || "light";
-      const savedView = localStorage.getItem(viewStorageKey) || "full";
       applyTheme(savedTheme === "dark" ? "dark" : "light");
-      applyView(savedView === "executive" ? "executive" : "full");
 
       if (themeToggle) {
         themeToggle.addEventListener("click", function () {
@@ -1163,13 +1408,6 @@
         });
       }
 
-      if (viewToggle) {
-        viewToggle.addEventListener("click", function () {
-          const next = (document.body.getAttribute("data-view") === "executive") ? "full" : "executive";
-          applyView(next);
-          localStorage.setItem(viewStorageKey, next);
-        });
-      }
 
       if (pageSizeSelect) {
         const allowed = new Set(["8", "12", "20", "40"]);
@@ -1202,11 +1440,16 @@
           id: Number(el.dataset.rowId || 0),
           match: Number(el.dataset.match || 0),
           fuente: (el.dataset.fuente || "").trim(),
+          fechaCaptura: (el.dataset.fechaCaptura || "").trim(),
           norma: (el.dataset.norma || "").trim(),
         }))
-        .filter((r) => r.id > 0 && r.match === 1);
+        .filter((r) => r.id > 0 && r.match === 1)
+        .map((r) => ({
+          ...r,
+          signature: String(r.id) + "|" + (r.fechaCaptura || ""),
+        }));
 
-      const storageKey = "alerta_legal_seen_row_ids_v1";
+      const storageKey = "alerta_legal_seen_row_ids_v2";
       const notifKey = "alerta_legal_notif_queue_v1";
       let seen = [];
       let notifQueue = [];
@@ -1220,8 +1463,8 @@
       } catch (_) {
         notifQueue = [];
       }
-      const seenSet = new Set((seen || []).map((x) => Number(x)).filter((x) => Number.isFinite(x)));
-      const fresh = relevantRows.filter((r) => !seenSet.has(r.id));
+      const seenSet = new Set((seen || []).map((x) => String(x || "")).filter((x) => x));
+      const fresh = relevantRows.filter((r) => !seenSet.has(r.signature));
 
       const now = new Date();
       notifyDay.textContent = bogotaWeekday(now);
@@ -1237,7 +1480,7 @@
         notifyBar.style.display = "block";
       }
 
-      const merged = Array.from(new Set([...(seen || []), ...relevantRows.map((r) => r.id)])).slice(-1500);
+      const merged = Array.from(new Set([...(seen || []), ...relevantRows.map((r) => r.signature)])).slice(-1500);
       try {
         localStorage.setItem(storageKey, JSON.stringify(merged));
       } catch (_) {}
@@ -1281,12 +1524,14 @@
       function pushNotifications(items) {
         const nowIso = formatBogotaDateTime(new Date());
         items.forEach((r) => {
-          const exists = notifQueue.some((x) => Number(x.id) === Number(r.id));
+          const signature = r.signature || (String(r.id) + "|" + (r.fechaCaptura || ""));
+          const exists = notifQueue.some((x) => String(x.signature || "") === signature);
           if (exists) return;
           notifQueue.unshift({
             id: r.id,
             fuente: r.fuente,
             fecha: nowIso,
+            signature: signature,
             read: false
           });
         });
@@ -1300,6 +1545,7 @@
         id: x.id,
         fuente: x.fuente,
         fecha: x.fecha,
+        signature: x.signature || (String(x.id || 0) + "|" + (x.fecha || "")),
         read: !!x.read,
       }));
       saveQueue();
@@ -1323,6 +1569,14 @@
         });
       }
 
+      if (notifResetBtn) {
+        notifResetBtn.addEventListener("click", function () {
+          notifQueue = [];
+          saveQueue();
+          renderNotif();
+        });
+      }
+
       async function pollForNew() {
         try {
           const res = await fetch("/api/results", { cache: "no-store" });
@@ -1331,9 +1585,13 @@
           const rel = (data || []).filter((r) => Number(r.match) === 1).map((r) => ({
             id: Number(r.id || 0),
             fuente: (r.fuente || "").toLowerCase(),
-          })).filter((r) => r.id > 0);
-          const seenNow = new Set((merged || []).map((x) => Number(x)));
-          const freshNow = rel.filter((r) => !seenNow.has(r.id));
+            fechaCaptura: (r.fecha_captura || "").trim(),
+          })).filter((r) => r.id > 0).map((r) => ({
+            ...r,
+            signature: String(r.id) + "|" + (r.fechaCaptura || ""),
+          }));
+          const seenNow = new Set((merged || []).map((x) => String(x || "")).filter((x) => x));
+          const freshNow = rel.filter((r) => !seenNow.has(r.signature));
           if (!freshNow.length) return;
           pushNotifications(freshNow);
 
@@ -1344,7 +1602,7 @@
           notifyCount.textContent = "+ " + freshNow.length + " notificaciones";
           notifyBar.style.display = "block";
 
-          const mergedNow = Array.from(new Set([...(merged || []), ...freshNow.map((r) => r.id)])).slice(-1500);
+          const mergedNow = Array.from(new Set([...(merged || []), ...freshNow.map((r) => r.signature)])).slice(-1500);
           localStorage.setItem(storageKey, JSON.stringify(mergedNow));
           merged.length = 0;
           merged.push.apply(merged, mergedNow);
@@ -1356,6 +1614,7 @@
 
       function setRunStatus(payload) {
         if (!runMainStatus || !runMainBtn) return;
+        lastRunPayload = payload || null;
         const running = !!(payload && payload.running);
         const exitCode = payload ? payload.exit_code : null;
         const progress = Math.max(0, Math.min(100, Number(payload && payload.progress || 0)));
@@ -1386,6 +1645,7 @@
           if (runMainStopBtn) runMainStopBtn.disabled = true;
           runMainBtn.textContent = "Reintentar analisis";
         }
+        updateRunTiming(payload);
       }
 
       function setRunLogs(payload) {
@@ -1403,6 +1663,18 @@
           setRunStatus(data);
           setRunLogs(data);
         } catch (_) {}
+      }
+
+      if (runSettingsBtn && runSettingsPanel) {
+        runSettingsBtn.addEventListener("click", function () {
+          const opening = runSettingsPanel.style.display !== "block";
+          runSettingsPanel.style.display = opening ? "block" : "none";
+        });
+        document.addEventListener("click", function (ev) {
+          if (!runSettingsPanel.contains(ev.target) && !runSettingsBtn.contains(ev.target)) {
+            runSettingsPanel.style.display = "none";
+          }
+        });
       }
 
       if (runMainBtn) {
@@ -1435,6 +1707,9 @@
 
       refreshRunStatus();
       setInterval(refreshRunStatus, 2500);
+      setInterval(function () {
+        updateRunTiming(lastRunPayload);
+      }, 1000);
     })();
   </script>
 </body>

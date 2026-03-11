@@ -1,0 +1,4 @@
+0|bad_2367_current|data/downloads/diario/diario_20260304_143844_5.pdf
+0|bad_0442_current|data/downloads/diario/diario_20260304_143657_2.pdf
+0|bad_0327_current|data/downloads/diario/diario_20260304_142032_9.pdf
+0|bad_legacy_dirty_580|data/downloads/diario/diario_20260304_104545_7.pdf
